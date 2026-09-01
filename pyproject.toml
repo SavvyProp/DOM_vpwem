@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dom-vpwem"
+version = "0.1.0"
+description = "VPWEM training and evaluation for MIKASA shell-game tasks"
+readme = "README.md"
+requires-python = ">=3.9,<3.12"
+license = {text = "Apache-2.0"}
+authors = [{name = "DOM-VPWEM contributors"}]
+dependencies = [
+  "numpy==1.23.5",
+  "PyYAML>=6,<7",
+  "torch==2.2.1",
+  "torchvision==0.17.1",
+]
+
+[project.optional-dependencies]
+eval = ["mikasa-robo-suite==1.0.0"]
+
+[dependency-groups]
+dev = [
+  "pytest>=7,<9",
+  "ruff>=0.15.8,<0.16",
+]
+
+[tool.uv]
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version < '3.12'",
+]
+prerelease = "allow"
+
+[project.scripts]
+dom-vpwem-train = "dom_vpwem.train:main"
+dom-vpwem-eval = "dom_vpwem.evaluate:main"
+
+[project.urls]
+"VPWEM paper" = "https://arxiv.org/abs/2603.04910"
+"Reference implementation" = "https://github.com/HarryLui98/code_vpwem"
+"MIKASA-Robo-VLA" = "https://github.com/CognitiveAISystems/MIKASA-Robo"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

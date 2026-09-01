@@ -1,0 +1,16 @@
+DOM-VPWEM
+
+This project implements and adapts the VPWEM architecture described by Yuheng
+Lei, Zhixuan Liang, Hongyuan Zhang, and Ping Luo in "VPWEM: Non-Markovian
+Visuomotor Policy with Working and Episodic Memory".
+
+The implementation was validated against the Apache-2.0 reference source at:
+https://github.com/HarryLui98/code_vpwem
+commit 5e372e847793ced1c37d39d4efa7b2b710eb826c
+
+The data and environment adapter targets MIKASA-Robo-VLA, which is distributed
+separately under its own license:
+https://github.com/CognitiveAISystems/MIKASA-Robo
+
+No MIKASA dataset trajectories, simulator assets, or oracle checkpoints are
+distributed in this repository.

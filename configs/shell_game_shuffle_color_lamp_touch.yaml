@@ -1,0 +1,70 @@
+task:
+  env_id: ShellGameShuffleColorLampTouch-VLA-v0
+  dataset_dir: data_mikasa_robo/data_npz/shell_game_shuffle_color_lamp_touch_vla_v0
+  max_episode_steps: 60
+  obs_mode: rgb
+  control_mode: pd_ee_delta_pose
+  reward_mode: normalized_dense
+  sim_backend: gpu
+
+model:
+  action_dim: 7
+  proprio_dim: 7
+  obs_steps: 2
+  action_steps: 8
+  action_horizon: 9
+  image_height: 128
+  image_width: 128
+  crop_height: 100
+  crop_width: 100
+  random_crop: true
+  embedding_dim: 256
+  vision_backbone: resnet18
+  share_vision_encoder: false
+  group_norm: true
+  freeze_vision_encoder: false
+  denoiser_layers: 8
+  denoiser_heads: 4
+  embedding_dropout: 0.0
+  denoiser_dropout: 0.3
+  memory_queries: 2
+  memory_layers: 2
+  memory_heads: 8
+  memory_cache_size: 8
+  # FIFO is the main-method setting in the VPWEM paper; adjacent_similarity
+  # is also implemented and can be selected here for the public-code variant.
+  memory_cache_strategy: fifo
+  memory_subsample_ratio: 5
+  short_condition_dropout: 0.3
+  long_condition_dropout: 0.3
+  diffusion_steps: 50
+  beta_schedule: cosine
+  ema_decay: 0.999
+  proprio_normalization: minmax
+  # Official MIKASA-VLA actions are already normalized controller commands.
+  action_normalization: identity
+
+train:
+  output_dir: outputs/shell_game_shuffle_color_lamp_touch
+  seed: 100
+  device: cuda
+  # Raw-image training is memory intensive; the reference MIKASA image config
+  # uses 16. Increase only after measuring GPU headroom.
+  batch_size: 16
+  num_workers: 2
+  prefetch_factor: 1
+  # Roughly 1.1 GiB for the released single-task RGB dataset; forked workers
+  # share these read-only pages and avoid reopening an NPZ for every sample.
+  preload_dataset: true
+  gradient_steps: 600000
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  grad_clip_norm: 1.0
+  log_every: 100
+  save_every: 20000
+  keep_last_checkpoints: 3
+  mixed_precision: true
+  compile_model: false
+  resume: null
+  # Set this and freeze_vision_encoder above for the paper's multi-stage setup.
+  vision_encoder_checkpoint: null
