@@ -68,6 +68,18 @@ Add MIKASA, ManiSkill, and the online evaluation/collection stack with:
 uv sync --locked --extra eval
 ```
 
+Add the lightweight public-dataset downloader/converter stack with:
+
+```bash
+uv sync --locked --extra data
+```
+
+Both extras can be installed together with:
+
+```bash
+uv sync --locked --extra data --extra eval
+```
+
 uv creates a local `.venv` and `uv run` uses it automatically; shell activation
 is unnecessary. The lock is intentionally restricted to Linux x86-64, matching
 the upstream MIKASA GPU environment, and aligns NumPy 1.23.5, PyTorch 2.2.1,
@@ -84,17 +96,67 @@ uv run --locked python -c \
 
 ## Dataset
 
-The loader expects the official per-episode NPZ source layout:
+Install both supported public datasets with one command:
 
-```text
-data_mikasa_robo/data_npz/shell_game_shuffle_color_lamp_touch_vla_v0/
-├── train_data_000000.npz
-├── train_data_000001.npz
-└── ...
+```bash
+uv run --locked --extra data dom-vpwem-install-datasets
 ```
 
-For `ShellGameTouch-VLA-v0`, the corresponding configured directory is
-`data_mikasa_robo/data_npz/shell_game_touch_vla_v0/`.
+The equivalent source-tree script is
+[`scripts/install_datasets.py`](scripts/install_datasets.py):
+
+```bash
+uv run --locked --extra data python scripts/install_datasets.py
+```
+
+The command downloads only the two task folders from the official
+[MIKASA LeRobot v3 release](https://huggingface.co/datasets/mikasa-robo/mikasa-robo-vla-lerobot)
+at the immutable commit
+`fa5417a266d1cb87ed7715c3dd2d0e4edc067b04`. It streams the Parquet state and
+action rows alongside the top/wrist AV1 videos, then produces the exact NPZ
+layout used by the trainer:
+
+```text
+data_mikasa_robo/data_npz/
+├── shell_game_shuffle_color_lamp_touch_vla_v0/
+│   ├── train_data_000000.npz
+│   ├── ...
+│   └── .dom_vpwem_dataset.json
+└── shell_game_touch_vla_v0/
+    ├── train_data_000000.npz
+    ├── ...
+    └── .dom_vpwem_dataset.json
+```
+
+Install just one task by environment ID, dataset slug, or short alias:
+
+```bash
+uv run --locked --extra data dom-vpwem-install-datasets --task touch
+uv run --locked --extra data dom-vpwem-install-datasets --task shuffle
+```
+
+Conversion happens in a sibling staging directory. Every episode is validated
+and recorded with its byte size and SHA-256 digest before the completed task is
+promoted. A matching installation is an idempotent no-op and does not access
+the network. Run a full integrity check later with:
+
+```bash
+uv run --locked dom-vpwem-install-datasets --verify-only
+```
+
+Task selection defaults to both for verification as well; append `--task
+touch` or `--task shuffle` if only one was installed.
+
+Use `--force` to build and verify a replacement before atomically swapping an
+existing installer-managed task. Unmarked directories are never merged or
+overwritten without that explicit flag. Downloads are resumable in
+`<output-root>/.cache/huggingface`; `--cache-dir` selects another cache, and
+`--offline` permits cached-only installation.
+
+Allow roughly 2 GiB for the two decoded NPZ datasets in addition to the compact
+Hugging Face cache and temporary staging space. The source videos are the
+official release's AV1-encoded camera streams; use locally collected NPZ or the
+larger lossless RLDS release if exact pre-video pixel values are required.
 
 Padded and unpadded numeric filenames are both accepted. Each episode must
 contain:
@@ -108,8 +170,14 @@ action    [T, 7]            float32 in [-1, 1]
 `done`, `success`, and `episode_length` are used when available. Language is
 never deserialized or supplied to the policy.
 
-Collect the task using the current MIKASA PPO collector and its oracle
-checkpoint:
+The installer writes `done=True` only on the final row and records
+`episode_length`; the public LeRobot export does not include stepwise success,
+reward, or language fields, none of which are consumed by this trainer.
+
+### Collect custom trajectories instead
+
+To generate new source NPZ rather than installing the public release, run the
+current MIKASA PPO collector with a separately trained oracle checkpoint:
 
 ```bash
 uv run --locked --extra eval \
@@ -122,10 +190,8 @@ uv run --locked --extra eval \
 
 For the stationary-cup dataset, use `--env-id ShellGameTouch-VLA-v0`; the
 collector writes it under the task-specific directory configured above.
-
-The public MIKASA release is also available as RLDS and LeRobot v3. This port
-currently consumes the collector's NPZ source format; it does not silently
-guess changing LeRobot feature names.
+The collector requires the MIKASA GPU simulation stack and does not ship its
+VLA oracle checkpoints as part of this repository.
 
 ## Train
 

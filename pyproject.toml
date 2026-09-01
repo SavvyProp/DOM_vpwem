@@ -7,8 +7,8 @@ name = "dom-vpwem"
 version = "0.1.0"
 description = "VPWEM training and evaluation for MIKASA shell-game tasks"
 readme = "README.md"
-requires-python = ">=3.9,<3.12"
-license = {text = "Apache-2.0"}
+requires-python = ">=3.10,<3.12"
+license = "Apache-2.0"
 authors = [{name = "DOM-VPWEM contributors"}]
 dependencies = [
   "numpy==1.23.5",
@@ -18,6 +18,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+data = [
+  "av>=16,<17",
+  "huggingface-hub>=0.23,<1",
+  "pyarrow>=18,<22",
+]
 eval = ["mikasa-robo-suite==1.0.0"]
 
 [dependency-groups]
@@ -35,6 +40,7 @@ prerelease = "allow"
 [project.scripts]
 dom-vpwem-train = "dom_vpwem.train:main"
 dom-vpwem-eval = "dom_vpwem.evaluate:main"
+dom-vpwem-install-datasets = "dom_vpwem.dataset_installer:main"
 
 [project.urls]
 "VPWEM paper" = "https://arxiv.org/abs/2603.04910"
@@ -50,7 +56,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
