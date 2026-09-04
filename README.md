@@ -16,7 +16,8 @@ The implementation includes:
 - current MIKASA 7-D `proprio` and normalized 7-D `pd_ee_delta_pose` actions;
 - episode-safe NPZ loading, training checkpoints with EMA and normalization;
 - canonical 50-episode evaluation with memory resets and `success_once`
-  latching.
+  latching;
+- optional H.264 MP4 recording of evaluation rollouts.
 
 The architecture follows the [VPWEM paper](https://arxiv.org/abs/2603.04910)
 and was checked against the Apache-2.0
@@ -317,6 +318,33 @@ The output JSON follows MIKASA's task-result fields, including the Short split,
 the task-specific memory type (Tracking for shuffle-color or Spatial for
 stationary touch), episode seeds, actual emitted action-chunk size, model
 configuration, and benchmark commit.
+
+### Record an evaluation rollout
+
+Add `--video-output` to the normal evaluator to save one episode as an MP4. For
+example, this records a single shuffle-task rollout while also writing its JSON
+result:
+
+```bash
+uv run --locked --extra eval dom-vpwem-eval \
+  --checkpoint outputs/shell_game_shuffle_color_lamp_touch/checkpoint_600000.pt \
+  --env-id ShellGameShuffleColorLampTouch-VLA-v0 \
+  --device cuda \
+  --sim-backend gpu \
+  --episodes 1 \
+  --action-chunk-size 1 \
+  --video-output eval_results/videos/shell_game_shuffle.mp4 \
+  --output eval_results/shell_game_shuffle_color_lamp_touch.json
+```
+
+The video shows the overhead and wrist RGB observations side by side, with the
+episode seed, step, and latched success state overlaid. It includes the reset
+frame and every post-action frame (including the terminal frame), and defaults
+to the simulator's 20 Hz control rate. During a longer evaluation,
+`--video-episode N` records only zero-based episode `N`; metrics are still
+computed over every requested episode. Use `--video-fps` to change playback
+speed without changing the rollout itself. Video status is printed to stderr,
+so stdout remains valid result JSON.
 
 ## Important shuffle-color data caveat
 

@@ -249,6 +249,7 @@ data = [
     { name = "pyarrow" },
 ]
 eval = [
+    { name = "imageio", extra = ["ffmpeg"] },
     { name = "mikasa-robo-suite" },
 ]
 
@@ -262,6 +263,7 @@ dev = [
 requires-dist = [
     { name = "av", marker = "extra == 'data'", specifier = ">=16,<17" },
     { name = "huggingface-hub", marker = "extra == 'data'", specifier = ">=0.23,<1" },
+    { name = "imageio", extras = ["ffmpeg"], marker = "extra == 'eval'", specifier = ">=2.37,<3" },
     { name = "mikasa-robo-suite", marker = "extra == 'eval'", specifier = "==1.0.0" },
     { name = "numpy", specifier = "==1.23.5" },
     { name = "pyarrow", marker = "extra == 'data'", specifier = ">=18,<22" },

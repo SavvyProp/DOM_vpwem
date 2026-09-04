@@ -17,7 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import operator
+import sys
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Deque, Mapping, Protocol, Sequence
@@ -30,6 +32,11 @@ from .mikasa_env import (
     MikasaEnvAdapter,
     MikasaEnvConfig,
     _first_scalar,
+)
+from .rollout_video import (
+    DEFAULT_VIDEO_FPS,
+    Mp4RolloutRecorder,
+    RolloutFrameSink,
 )
 from .tasks import get_task_spec
 
@@ -152,6 +159,7 @@ def run_episode(
     *,
     seed: int,
     device: str | None = None,
+    frame_sink: RolloutFrameSink | None = None,
 ) -> EpisodeResult:
     """Run one seeded episode with a fresh memory state and action queue."""
 
@@ -162,6 +170,9 @@ def run_episode(
     episode_return = 0.0
     n_steps = 0
     action_chunk_size: int | None = None
+
+    if frame_sink is not None:
+        frame_sink.write_frame(observation, step=0, success=False)
 
     for _ in range(adapter.max_episode_steps):
         if not action_queue:
@@ -180,6 +191,8 @@ def run_episode(
         n_steps += 1
         episode_return += reward
         success_once = success_once or bool(_first_scalar(info.get("success"), default=False))
+        if frame_sink is not None:
+            frame_sink.write_frame(observation, step=n_steps, success=success_once)
         if terminated or truncated:
             break
 
@@ -226,11 +239,16 @@ def evaluate_policy(
     model_name: str = "dom-vpwem",
     model_config: Mapping[str, Any] | None = None,
     benchmark_commit: str = "unknown",
+    video_output: str | Path | None = None,
+    video_episode: int = 0,
+    video_fps: int = DEFAULT_VIDEO_FPS,
 ) -> EvaluationResult:
     """Evaluate one policy using canonical MIKASA seeds and success latching.
 
     If this function constructs the adapter it closes it automatically.  A
     caller-supplied adapter remains open unless ``close_adapter=True``.
+    When ``video_output`` is set, only zero-based ``video_episode`` is recorded
+    and all requested episodes still contribute to the returned metrics.
     """
 
     if n_episodes <= 0:
@@ -239,6 +257,16 @@ def evaluate_policy(
         raise ValueError(f"start_seed must be non-negative, got {start_seed}.")
     if adapter is not None and env_config is not None:
         raise ValueError("Pass either adapter or env_config, not both.")
+    video_path = Path(video_output) if video_output is not None else None
+    if video_path is not None:
+        if video_path.suffix.lower() != ".mp4":
+            raise ValueError(f"video_output must end in .mp4, got {video_path}.")
+        if video_episode < 0 or video_episode >= n_episodes:
+            raise ValueError(
+                f"video_episode must be between 0 and {n_episodes - 1}, got {video_episode}."
+            )
+        if isinstance(video_fps, bool) or not isinstance(video_fps, int) or video_fps <= 0:
+            raise ValueError(f"video_fps must be a positive integer, got {video_fps!r}.")
 
     owns_adapter = adapter is None
     if adapter is None:
@@ -250,12 +278,25 @@ def evaluate_policy(
     try:
         task_spec = get_task_spec(adapter.config.env_id)
         for episode_index in range(n_episodes):
-            episode = run_episode(
-                adapter,
-                policy,
-                seed=start_seed + episode_index,
-                device=device,
-            )
+            episode_seed = start_seed + episode_index
+            recorder = None
+            if video_path is not None and episode_index == video_episode:
+                recorder = Mp4RolloutRecorder(
+                    video_path,
+                    fps=video_fps,
+                    episode_index=episode_index,
+                    seed=episode_seed,
+                    horizon=adapter.max_episode_steps,
+                )
+            frame_sink_context = recorder if recorder is not None else nullcontext(None)
+            with frame_sink_context as frame_sink:
+                episode = run_episode(
+                    adapter,
+                    policy,
+                    seed=episode_seed,
+                    device=device,
+                    frame_sink=frame_sink,
+                )
             if action_chunk_size is None:
                 action_chunk_size = episode.action_chunk_size
                 _validate_declared_chunk_size(policy, action_chunk_size)
@@ -323,11 +364,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON output path; stdout is always printed.",
     )
+    parser.add_argument(
+        "--video-output",
+        type=Path,
+        default=None,
+        help="Optional .mp4 path for one side-by-side rollout video.",
+    )
+    parser.add_argument(
+        "--video-episode",
+        type=int,
+        default=0,
+        help="Zero-based episode index to record when --video-output is set (default: 0).",
+    )
+    parser.add_argument(
+        "--video-fps",
+        type=int,
+        default=DEFAULT_VIDEO_FPS,
+        help=f"MP4 playback frame rate (default: {DEFAULT_VIDEO_FPS}, the control rate).",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    if (
+        args.output is not None
+        and args.video_output is not None
+        and args.output.resolve() == args.video_output.resolve()
+    ):
+        parser.error("--output and --video-output must be different paths")
     policy = _load_cli_policy(args)
     model_config: dict[str, Any] = {"checkpoint": str(Path(args.checkpoint))}
     if args.num_inference_steps is not None:
@@ -343,6 +409,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_name=args.model_name,
         model_config=model_config,
         benchmark_commit=args.benchmark_commit,
+        video_output=args.video_output,
+        video_episode=args.video_episode,
+        video_fps=args.video_fps,
     )
     payload = result.to_dict()
     rendered = json.dumps(payload, indent=2, sort_keys=True)
@@ -350,6 +419,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
+    if args.video_output is not None:
+        print(f"Saved rollout video: {args.video_output}", file=sys.stderr)
     return 0
 
 

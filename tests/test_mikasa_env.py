@@ -12,7 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from dom_vpwem import evaluate as evaluate_module
 from dom_vpwem import mikasa_env as mikasa_env_module
-from dom_vpwem.evaluate import EpisodeResult, EvaluationResult, _action_chunk, evaluate_policy
+from dom_vpwem.evaluate import (
+    EpisodeResult,
+    EvaluationResult,
+    _action_chunk,
+    evaluate_policy,
+    run_episode,
+)
 from dom_vpwem.mikasa_env import (
     DEFAULT_ENV_ID,
     MikasaContractError,
@@ -211,6 +217,114 @@ def test_evaluate_policy_executes_fifo_chunks_and_latches_success():
     assert not np.array_equal(fake.actions[1], fake.actions[2])
 
 
+def test_run_episode_records_reset_and_every_post_step_observation():
+    class FrameSink:
+        def __init__(self):
+            self.frames = []
+
+        def write_frame(self, observation, *, step, success):
+            self.frames.append((step, int(observation["rgb"][0, 0, 0]), success))
+
+    sink = FrameSink()
+    episode = run_episode(
+        MikasaEnvAdapter(env=FakeEnv(horizon=4)),
+        ChunkPolicy(),
+        seed=100,
+        frame_sink=sink,
+    )
+
+    assert episode.n_steps == 4
+    assert sink.frames == [
+        (0, 0, False),
+        (1, 1, False),
+        (2, 2, True),
+        (3, 3, True),
+        (4, 4, True),
+    ]
+
+
+def test_evaluate_policy_records_only_the_selected_episode(monkeypatch, tmp_path):
+    created = []
+
+    class FakeRecorder:
+        def __init__(self, output, **kwargs):
+            self.output = output
+            self.kwargs = kwargs
+            self.frames = []
+            created.append(self)
+
+        def __enter__(self):
+            return self
+
+        def write_frame(self, observation, *, step, success):
+            self.frames.append((step, int(observation["rgb"][0, 0, 0]), success))
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+    monkeypatch.setattr(evaluate_module, "Mp4RolloutRecorder", FakeRecorder)
+    fake = FakeEnv(horizon=2)
+
+    result = evaluate_policy(
+        ChunkPolicy(),
+        adapter=MikasaEnvAdapter(env=fake),
+        n_episodes=3,
+        start_seed=100,
+        video_output=tmp_path / "rollout.mp4",
+        video_episode=1,
+        video_fps=12,
+    )
+
+    assert len(result.episodes) == 3
+    assert fake.seeds == [100, 101, 102]
+    assert len(created) == 1
+    assert created[0].kwargs == {
+        "fps": 12,
+        "episode_index": 1,
+        "seed": 101,
+        "horizon": 2,
+    }
+    assert created[0].frames == [(0, 0, False), (1, 1, False), (2, 2, True)]
+
+
+def test_evaluate_policy_does_not_load_video_dependencies_without_output(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        evaluate_module,
+        "Mp4RolloutRecorder",
+        lambda *args, **kwargs: pytest.fail("recorder should not be constructed"),
+    )
+
+    result = evaluate_policy(
+        ChunkPolicy(),
+        adapter=MikasaEnvAdapter(env=FakeEnv(horizon=1)),
+        n_episodes=1,
+    )
+
+    assert result.episodes[0].n_steps == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"video_output": "rollout.mov"}, "end in .mp4"),
+        ({"video_output": "rollout.mp4", "video_episode": 2}, "between 0 and 0"),
+        ({"video_output": "rollout.mp4", "video_fps": 0}, "positive integer"),
+    ],
+)
+def test_evaluate_policy_validates_video_options_before_rollout(kwargs, message):
+    fake = FakeEnv(horizon=1)
+    with pytest.raises(ValueError, match=message):
+        evaluate_policy(
+            ChunkPolicy(),
+            adapter=MikasaEnvAdapter(env=fake),
+            n_episodes=1,
+            **kwargs,
+        )
+    assert fake.seeds == []
+
+
 @pytest.mark.parametrize(
     ("env_id", "expected_split", "expected_memory_type"),
     [
@@ -341,26 +455,36 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(evaluate_module, "_load_cli_policy", fake_load)
     monkeypatch.setattr(evaluate_module, "evaluate_policy", fake_evaluate)
     output = tmp_path / "result.json"
+    video_output = tmp_path / "rollout.mp4"
     checkpoint = tmp_path / "checkpoint.pt"
 
-    assert evaluate_module.main(
-        [
-            "--checkpoint",
-            str(checkpoint),
-            "--episodes",
-            "1",
-            "--num-inference-steps",
-            "7",
-            "--action-chunk-size",
-            "3",
-            "--model-name",
-            "vpwem-test",
-            "--benchmark-commit",
-            "509b875",
-            "--output",
-            str(output),
-        ]
-    ) == 0
+    assert (
+        evaluate_module.main(
+            [
+                "--checkpoint",
+                str(checkpoint),
+                "--episodes",
+                "1",
+                "--num-inference-steps",
+                "7",
+                "--action-chunk-size",
+                "3",
+                "--model-name",
+                "vpwem-test",
+                "--benchmark-commit",
+                "509b875",
+                "--video-output",
+                str(video_output),
+                "--video-episode",
+                "0",
+                "--video-fps",
+                "12",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
 
     load_args = captured["load_args"]
     assert load_args.num_inference_steps == 7
@@ -369,6 +493,9 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
     evaluate_kwargs = captured["evaluate_kwargs"]
     assert evaluate_kwargs["model_name"] == "vpwem-test"
     assert evaluate_kwargs["benchmark_commit"] == "509b875"
+    assert evaluate_kwargs["video_output"] == video_output
+    assert evaluate_kwargs["video_episode"] == 0
+    assert evaluate_kwargs["video_fps"] == 12
     assert evaluate_kwargs["model_config"] == {
         "checkpoint": str(checkpoint),
         "num_inference_steps": 7,
@@ -382,7 +509,33 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
     }
     assert payload["benchmark_commit"] == "509b875"
     assert payload["action_chunk_size"] == 3
-    assert json.loads(capsys.readouterr().out) == payload
+    captured_output = capsys.readouterr()
+    assert json.loads(captured_output.out) == payload
+    assert f"Saved rollout video: {video_output}" in captured_output.err
+
+
+def test_cli_rejects_using_the_same_json_and_video_path(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        evaluate_module,
+        "_load_cli_policy",
+        lambda args: pytest.fail("policy should not be loaded"),
+    )
+    output = tmp_path / "same.mp4"
+
+    with pytest.raises(SystemExit) as error:
+        evaluate_module.main(
+            [
+                "--checkpoint",
+                str(tmp_path / "checkpoint.pt"),
+                "--output",
+                str(output),
+                "--video-output",
+                str(output),
+            ]
+        )
+
+    assert error.value.code == 2
+    assert "must be different paths" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

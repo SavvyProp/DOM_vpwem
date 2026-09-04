@@ -23,7 +23,10 @@ data = [
   "huggingface-hub>=0.23,<1",
   "pyarrow>=18,<22",
 ]
-eval = ["mikasa-robo-suite==1.0.0"]
+eval = [
+  "imageio[ffmpeg]>=2.37,<3",
+  "mikasa-robo-suite==1.0.0",
+]
 
 [dependency-groups]
 dev = [
