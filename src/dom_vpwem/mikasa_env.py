@@ -15,7 +15,12 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
-from .tasks import DEFAULT_ENV_ID, get_task_spec
+from .simulator_assets import require_mikasa_lamp_asset
+from .tasks import (
+    DEFAULT_ENV_ID,
+    SHELL_GAME_SHUFFLE_COLOR_LAMP_TOUCH_ENV_ID,
+    get_task_spec,
+)
 
 # Kept as a public legacy identifier; it is not part of the current two-task
 # registry and therefore has no metadata fallback when a runtime exposes no
@@ -142,8 +147,11 @@ def make_mikasa_env(
     config = config or MikasaEnvConfig()
     if (env_factory is None) != (wrapper_factory is None):
         raise ValueError("env_factory and wrapper_factory must be supplied together.")
-    if env_factory is None:
+    using_installed_runtime = env_factory is None
+    if using_installed_runtime:
         env_factory, wrapper_factory = _load_runtime()
+        if config.env_id == SHELL_GAME_SHUFFLE_COLOR_LAMP_TOUCH_ENV_ID:
+            require_mikasa_lamp_asset()
 
     assert wrapper_factory is not None
     env = env_factory(config.env_id, **config.gym_make_kwargs())

@@ -14,3 +14,10 @@ https://github.com/CognitiveAISystems/MIKASA-Robo
 
 No MIKASA dataset trajectories, simulator assets, or oracle checkpoints are
 distributed in this repository.
+
+The optional simulator-asset installer retrieves the unmodified "Low Poly
+Light Bulb" model by AleixoAlonso from the MIKASA-Robo v1.0.0 release commit
+16634db18bef08128ed79346469c86fc12169aed. The model's original source is:
+https://sketchfab.com/3d-models/low-poly-light-bulb-a7d27c2224d94c86a04083de8f9df7db
+The model is licensed separately under Creative Commons Attribution 4.0:
+https://creativecommons.org/licenses/by/4.0/

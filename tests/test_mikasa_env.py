@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from dom_vpwem import evaluate as evaluate_module
+from dom_vpwem import mikasa_env as mikasa_env_module
 from dom_vpwem.evaluate import EpisodeResult, EvaluationResult, _action_chunk, evaluate_policy
 from dom_vpwem.mikasa_env import (
     DEFAULT_ENV_ID,
@@ -18,6 +19,7 @@ from dom_vpwem.mikasa_env import (
     MikasaEnvAdapter,
     MikasaEnvConfig,
     canonicalize_observation,
+    make_mikasa_env,
     split_rgb,
 )
 
@@ -134,6 +136,32 @@ def test_adapter_builds_canonical_env_lazily_with_injected_factories():
     assert calls["wrap"] == (fake, False)
     adapter.close()
     assert fake.closed
+
+
+def test_installed_runtime_preflights_lamp_only_for_shuffle_task(monkeypatch):
+    fake = FakeEnv()
+    checked: list[str] = []
+
+    def make(env_id, **kwargs):
+        del env_id, kwargs
+        return fake
+
+    def wrap(env, *, include_overlays):
+        assert include_overlays is False
+        return env
+
+    monkeypatch.setattr(mikasa_env_module, "_load_runtime", lambda: (make, wrap))
+    monkeypatch.setattr(
+        mikasa_env_module,
+        "require_mikasa_lamp_asset",
+        lambda: checked.append("lamp"),
+    )
+
+    assert make_mikasa_env(MikasaEnvConfig()) is fake
+    assert checked == ["lamp"]
+
+    assert make_mikasa_env(MikasaEnvConfig(env_id="ShellGameTouch-VLA-v0")) is fake
+    assert checked == ["lamp"]
 
 
 def test_adapter_clips_batches_and_validates_actions():

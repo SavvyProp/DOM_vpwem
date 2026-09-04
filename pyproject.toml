@@ -41,6 +41,7 @@ prerelease = "allow"
 dom-vpwem-train = "dom_vpwem.train:main"
 dom-vpwem-eval = "dom_vpwem.evaluate:main"
 dom-vpwem-install-datasets = "dom_vpwem.dataset_installer:main"
+dom-vpwem-install-sim-assets = "dom_vpwem.simulator_assets:main"
 
 [project.urls]
 "VPWEM paper" = "https://arxiv.org/abs/2603.04910"

@@ -68,6 +68,32 @@ Add MIKASA, ManiSkill, and the online evaluation/collection stack with:
 uv sync --locked --extra eval
 ```
 
+MIKASA-Robo 1.0.0 accidentally omitted the lamp mesh used by
+`ShellGameShuffleColorLampTouch-VLA-v0` from both of its Python package
+artifacts. After syncing the evaluation extra, install the exact file from the
+immutable upstream release commit and verify its SHA-256 with:
+
+```bash
+uv run --locked --extra eval dom-vpwem-install-sim-assets
+```
+
+The command resolves the active uv environment dynamically and is an
+idempotent no-op when the correct asset is already present. For an offline
+install, download the file separately and pass
+`--source /path/to/low_poly_light_bulb.glb`; the same checksum is required.
+Unexpected existing content is preserved unless `--force` is supplied. This
+extra step is needed for the shuffle/lamp task, not `ShellGameTouch-VLA-v0`.
+
+If evaluation otherwise fails with a path ending in
+`vla/utils/objects/low_poly_light_bulb.glb`, rerun the installer command above
+in the same repository. Do not copy into a hard-coded `site-packages` path,
+because the location depends on the uv environment and Python version.
+
+The downloaded model is
+[Low Poly Light Bulb](https://sketchfab.com/3d-models/low-poly-light-bulb-a7d27c2224d94c86a04083de8f9df7db)
+by AleixoAlonso, used unmodified under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
 Add the lightweight public-dataset downloader/converter stack with:
 
 ```bash
@@ -219,13 +245,15 @@ Useful one-off overrides:
 ```bash
 uv run --locked dom-vpwem-train \
   --dataset-dir data_mikasa_robo/data_npz/shell_game_shuffle_color_lamp_touch_vla_v0 \
-  --output-dir outputs/shell_game \
+  --output-dir outputs/shell_game_shuffle_color_lamp_touch \
   --device cuda \
   --batch-size 16 \
   --steps 600000
 ```
 
-Resume with `--resume outputs/shell_game/checkpoint_20000.pt`. Checkpoints
+Resume with
+`--resume outputs/shell_game_shuffle_color_lamp_touch/checkpoint_20000.pt`.
+Checkpoints
 contain the online model, EMA model, optimizer, scheduler, scaler, random-state
 snapshots, complete configuration, and proprio/action normalization statistics.
 Resume intentionally rejects changes to the task, architecture, optimization
@@ -256,12 +284,13 @@ stationary-task command above.
 
 ```bash
 uv run --locked --extra eval dom-vpwem-eval \
-  --checkpoint outputs/shell_game/checkpoint_600000.pt \
+  --checkpoint outputs/shell_game_shuffle_color_lamp_touch/checkpoint_600000.pt \
+  --env-id ShellGameShuffleColorLampTouch-VLA-v0 \
   --device cuda \
   --sim-backend gpu \
   --action-chunk-size 1 \
   --benchmark-commit 509b875f3d207c287497c0a897661062de928bb0 \
-  --output eval_results/shell_game.json
+  --output eval_results/shell_game_shuffle_color_lamp_touch.json
 ```
 
 By default evaluation uses 50 episodes with seeds `4242424242` through
