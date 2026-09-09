@@ -63,16 +63,16 @@ TASK_ALIASES = _task_aliases()
 
 
 def resolve_tasks(values: Sequence[str] | None) -> list[TaskSpec]:
-    """Resolve CLI task aliases, defaulting to all supported tasks."""
+    """Resolve CLI task aliases, defaulting to tasks with published datasets."""
 
     if not values:
-        return list(TASK_SPECS.values())
+        return [task for task in TASK_SPECS.values() if task.public_dataset]
     if any(value.lower() == "all" for value in values):
         if len(values) != 1:
             raise DatasetInstallError(
                 "Task alias 'all' cannot be combined with other --task values."
             )
-        return list(TASK_SPECS.values())
+        return [task for task in TASK_SPECS.values() if task.public_dataset]
 
     resolved: list[TaskSpec] = []
     seen: set[str] = set()
@@ -85,9 +85,19 @@ def resolve_tasks(values: Sequence[str] | None) -> list[TaskSpec]:
                 f"Unknown task {value!r}. Use one of {supported}, or an alias: {aliases}."
             )
         if env_id not in seen:
-            resolved.append(TASK_SPECS[env_id])
+            task = TASK_SPECS[env_id]
+            _require_public_dataset(task)
+            resolved.append(task)
             seen.add(env_id)
     return resolved
+
+
+def _require_public_dataset(task: TaskSpec) -> None:
+    if not task.public_dataset:
+        raise DatasetInstallError(
+            f"{task.env_id} has no published dataset. Collect trajectories in the "
+            "custom environment and point the training config at that local dataset."
+        )
 
 
 def dataset_path(output_root: str | Path, task: TaskSpec) -> Path:
@@ -464,6 +474,8 @@ def install_datasets(
     selected = list(tasks)
     if not selected:
         raise DatasetInstallError("No datasets were selected.")
+    for task in selected:
+        _require_public_dataset(task)
     requested_root = Path(output_root).expanduser()
     if requested_root.is_symlink():
         raise DatasetInstallError(f"Dataset output root cannot be a symlink: {requested_root}")

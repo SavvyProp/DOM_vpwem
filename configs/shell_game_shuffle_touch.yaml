@@ -1,0 +1,9 @@
+# Repository-owned version of MIKASA's short shuffle-and-touch task.
+# Uses model/training defaults; collect trajectories under this custom task ID.
+task:
+  env_id: ShellGameShuffleTouchCustom-VLA-v0
+  dataset_dir: data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0
+  max_episode_steps: 60
+
+train:
+  output_dir: outputs/shell_game_shuffle_touch

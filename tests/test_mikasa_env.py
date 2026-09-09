@@ -330,6 +330,10 @@ def test_evaluate_policy_validates_video_options_before_rollout(kwargs, message)
     [
         ("ShellGameTouch-VLA-v0", "Short", "Spatial"),
         ("ShellGameShuffleColorLampTouch-VLA-v0", "Short", "Tracking"),
+        ("ShellGameShuffleTouchCustom-VLA-v0", "Short", "Tracking"),
+        ("RememberColorSequence3-Long-VLA-v0", "Long", "TemporalOrder"),
+        ("InterceptFastCover-VLA-v0", "Short", "Spatial"),
+        ("InterceptFastCover2-VLA-v0", "Short", "Spatial"),
     ],
 )
 def test_evaluate_policy_derives_benchmark_metadata_from_env_id(

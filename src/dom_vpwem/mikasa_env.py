@@ -1,4 +1,4 @@
-"""Dependency-light adapter for supported MIKASA-Robo-VLA shell-game tasks.
+"""Dependency-light adapter for supported MIKASA-Robo-VLA tasks and local variants.
 
 The module deliberately does not import Gymnasium, ManiSkill, Torch, or
 MIKASA-Robo at import time.  Those packages are only needed when
@@ -22,7 +22,7 @@ from .tasks import (
     get_task_spec,
 )
 
-# Kept as a public legacy identifier; it is not part of the current two-task
+# Kept as a public legacy identifier; it is not part of the current task
 # registry and therefore has no metadata fallback when a runtime exposes no
 # horizon.
 LONG_ENV_ID = "ShellGameShuffleColorLampTouch-Long-VLA-v0"
@@ -116,6 +116,9 @@ def _load_runtime() -> tuple[EnvFactory, WrapperFactory]:
         # Importing this package registers the VLA environment IDs with Gym.
         importlib.import_module("mikasa_robo_suite.vla.memory_envs")
         wrapper_module = importlib.import_module("mikasa_robo_suite.vla.utils.apply_wrappers")
+        from .custom_envs import register_custom_envs
+
+        register_custom_envs()
     except (ImportError, ModuleNotFoundError) as exc:
         raise MikasaDependencyError(
             "MIKASA evaluation requires gymnasium, ManiSkill, and "

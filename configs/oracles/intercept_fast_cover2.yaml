@@ -1,0 +1,29 @@
+# Privileged-state PPO oracle; separate from the visuomotor student config.
+env_id: InterceptFastCover2-VLA-v0
+output_dir: outputs/oracles/intercept_fast_cover2
+seed: 123
+device: cuda
+sim_backend: gpu
+num_envs: 256
+num_steps: 60
+total_timesteps: 150000000
+learning_rate: 0.0003
+gamma: 0.99
+gae_lambda: 0.95
+finite_horizon_gae: true
+num_minibatches: 16
+update_epochs: 4
+clip_coef: 0.2
+ent_coef: 0.0
+vf_coef: 0.5
+max_grad_norm: 0.5
+target_kl: 0.2
+num_eval_envs: 16
+eval_episodes: 64
+eval_seed: 10000000
+eval_every: 25
+success_threshold: 0.95
+# Export final_success_ckpt.pt after this many consecutive qualifying evaluations.
+success_evals: 3
+checkpoint_every: 25
+log_every: 10

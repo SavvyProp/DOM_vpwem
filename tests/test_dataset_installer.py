@@ -21,7 +21,7 @@ from dom_vpwem.lerobot_import import (
     LeRobotRow,
     write_npz_episodes,
 )
-from dom_vpwem.tasks import TASK_SPECS, get_task_spec
+from dom_vpwem.tasks import get_task_spec
 
 
 def _fake_streams(value: int = 0):
@@ -69,7 +69,12 @@ def _snapshot(tmp_path: Path, *tasks):
 
 
 def test_task_resolution_and_destination_contract(tmp_path: Path) -> None:
-    assert resolve_tasks(None) == list(TASK_SPECS.values())
+    published = [
+        get_task_spec("ShellGameShuffleColorLampTouch-VLA-v0"),
+        get_task_spec("ShellGameTouch-VLA-v0"),
+    ]
+    assert resolve_tasks(None) == published
+    assert resolve_tasks(["all"]) == published
     assert [task.env_id for task in resolve_tasks(["touch", "shuffle", "touch"])] == [
         "ShellGameTouch-VLA-v0",
         "ShellGameShuffleColorLampTouch-VLA-v0",
@@ -82,6 +87,26 @@ def test_task_resolution_and_destination_contract(tmp_path: Path) -> None:
         resolve_tasks(["not-a-task"])
     with pytest.raises(DatasetInstallError, match="cannot be combined"):
         resolve_tasks(["all", "not-a-task"])
+
+
+@pytest.mark.parametrize(
+    "env_id",
+    [
+        "InterceptFastCover-VLA-v0",
+        "InterceptFastCover2-VLA-v0",
+        "ShellGameShuffleTouchCustom-VLA-v0",
+        "RememberColorSequence3-Long-VLA-v0",
+    ],
+)
+def test_custom_task_is_rejected_before_downloading_or_creating_directories(tmp_path, env_id):
+    task = get_task_spec(env_id)
+    for alias in (task.env_id, task.dataset_slug):
+        with pytest.raises(DatasetInstallError, match="has no published dataset"):
+            resolve_tasks([alias])
+    destination = tmp_path / "custom"
+    with pytest.raises(DatasetInstallError, match="has no published dataset"):
+        install_datasets([task], output_root=destination)
+    assert not destination.exists()
 
 
 def test_install_fetches_converts_verifies_and_then_skips_without_network(

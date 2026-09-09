@@ -1,0 +1,29 @@
+# Privileged-state PPO oracle for the second-to-last color sequence task.
+env_id: RememberColorSequence3-Long-VLA-v0
+output_dir: outputs/oracles/remember_color_sequence3_long
+seed: 123
+device: cuda
+sim_backend: gpu
+num_envs: 256
+num_steps: 600
+total_timesteps: 150000000
+learning_rate: 0.0003
+gamma: 0.99
+gae_lambda: 0.95
+finite_horizon_gae: true
+num_minibatches: 16
+update_epochs: 4
+clip_coef: 0.2
+ent_coef: 0.0
+vf_coef: 0.5
+max_grad_norm: 0.5
+target_kl: 0.2
+num_eval_envs: 16
+eval_episodes: 64
+eval_seed: 10000000
+eval_every: 25
+success_threshold: 0.95
+# Export final_success_ckpt.pt after this many consecutive qualifying evaluations.
+success_evals: 3
+checkpoint_every: 25
+log_every: 10

@@ -12,6 +12,12 @@ The data and environment adapter targets MIKASA-Robo-VLA, which is distributed
 separately under its own license:
 https://github.com/CognitiveAISystems/MIKASA-Robo
 
+The local PPO oracle trainer uses the separately installed MIKASA
+AgentStateOnly implementation and observation wrappers. Its PPO/GAE workflow
+follows MIKASA's oracle-training and ManiSkill baseline implementations:
+https://github.com/CognitiveAISystems/MIKASA-Robo/tree/main/mikasa_robo_suite/vla/dataset_collectors
+https://github.com/mani-skill/ManiSkill/tree/main/examples/baselines/ppo
+
 No MIKASA dataset trajectories, simulator assets, or oracle checkpoints are
 distributed in this repository.
 
