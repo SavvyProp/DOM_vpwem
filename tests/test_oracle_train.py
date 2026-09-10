@@ -19,15 +19,15 @@ from dom_vpwem.oracle_train import (
 
 
 @pytest.mark.parametrize(
-    ("variant", "horizon"),
+    ("variant", "horizon", "run_suffix"),
     [
-        ("intercept_fast_cover", 60),
-        ("intercept_fast_cover2", 60),
-        ("shell_game_shuffle_touch", 60),
-        ("remember_color_sequence3_long", 600),
+        ("intercept_fast_cover", 60, "/fixed_start_v1"),
+        ("intercept_fast_cover2", 60, "/fixed_start_v1"),
+        ("shell_game_shuffle_touch", 60, ""),
+        ("remember_color_sequence3_long", 600, ""),
     ],
 )
-def test_oracle_config_cli_overrides_and_validates_yaml(tmp_path, variant, horizon):
+def test_oracle_config_cli_overrides_and_validates_yaml(tmp_path, variant, horizon, run_suffix):
     config, dry_run = parse_config(
         [
             "--config",
@@ -39,7 +39,7 @@ def test_oracle_config_cli_overrides_and_validates_yaml(tmp_path, variant, horiz
         ]
     )
     assert dry_run
-    assert config.output_dir == f"outputs/oracles/{variant}"
+    assert config.output_dir == f"outputs/oracles/{variant}{run_suffix}"
     assert config.num_envs == 32
     assert config.num_steps == horizon
     assert not config.finite_horizon_gae

@@ -9,8 +9,15 @@ class InterceptFastCover2(InterceptFastCover):
     Keep the original X/Z bounds and the outer thirds of its Y extent:
     [-0.50, -0.3666667] and [-0.2333333, -0.10] metres. The middle
     13.33 cm is open. Both sections are opaque and collisionless.
-    Visibility through the gap depends on the policy camera's viewpoint.
+    A higher fixed arm pose frames both launch and the opening from above.
     """
+
+    # Frame the launch range and the gap with one fixed 90-degree wrist view.
+    # Offline URDF calibration puts the camera near (-0.45, -0.45, 0.85) m:
+    # high enough to see into the gap over the first section. The base variant's
+    # reset hook uses these constants, never the sampled ball position.
+    INITIAL_LOOK_TARGET = (-0.20, -0.575, 0.03)
+    INITIAL_QPOS = (-1.31366, -0.07368, -0.04344, -1.00494, 0.27482, 1.15604, 0.83327, 0.04, 0.04)
 
     def _load_cover(self) -> None:
         x, y, z = self.COVER_CENTER

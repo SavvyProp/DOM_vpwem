@@ -68,6 +68,30 @@ Z=[0.20, 0.30]. Only visual geometry is added: the robot and ball pass through
 the box. Launch randomization, speed (0.75–1.0 m/s along +Y), cameras, controls,
 rewards, and the 60-step horizon are inherited from InterceptFast.
 
+Both cover variants use a **fixed arm starting pose**. Cover1 aims toward the
+mean ball launch position, **(-0.20, -0.775, 0.04) m**. Cover2 uses a higher
+pose to frame the launch area and the gap together, as described below.
+Within each variant, every episode starts with the same joint angles;
+inherited arm initialization noise is discarded. The pose is independent
+of the sampled ball position, velocity, and goal. The wrist camera keeps
+its original mount and field of view and moves with the arm after reset.
+
+At either starting pose, the launch range and its first 0.10 seconds of travel
+fit inside the wrist camera's field of view without either cover blocking the sightline.
+That provides three observations at 20 Hz, including the reset frame, when
+the arm holds its starting pose. Policies can move the arm immediately;
+there is no added action freeze or delay in the ball launch. Rendered GPU
+tests check initial ball visibility when the simulator is available.
+
+This replaces the earlier target-facing starting pose. Regenerate cover
+demonstrations for the new pose, and validate or retrain existing Intercept
+oracles before reuse. The covers now have different starting arm poses;
+use their separate PPO configs by default, or validate a shared expert on both.
+The generation script stores these updated experts and demonstrations under
+`fixed_start_v1` paths, preserving older artifacts and avoiding automatic reuse
+of the earlier poses. Reruns resume or reuse work for the current poses. Use
+fresh `--data-root` and `--oracle-root` directories for another independent run.
+
 [`InterceptFastCover2`](src/dom_vpwem/custom_envs/intercept_fast_cover2.py)
 keeps the same overall footprint and height, but removes the middle third
 along Y, the ball's main travel direction. Each remaining section measures
@@ -81,9 +105,15 @@ Both centers have X=-0.20 m and Z=0.25 m:
 | Second cover section | [-0.2333, -0.1000] | -0.1667 |
 
 The gap is intended to let the policy observe the ball again between covered
-portions of its travel. Actual visibility and its duration depend on camera
-perspective and the ball's trajectory; a gap in world coordinates does not
-guarantee a clear view from both cameras.
+portions of its travel. Cover2 starts with its wrist camera approximately at
+**(-0.45, -0.45, 0.85) m**, aimed at the fixed point **(-0.20, -0.575, 0.03) m**.
+The higher viewpoint frames both the launch area and a visible strip of the
+gap in one image, clearing the first block's top. Geometry tests check ball
+visibility in the gap at Y=-0.30 to -0.26 m and across the launch X range plus
+its positive-X drift, using the same camera transform as at launch. They also
+check that the blocks still hide the ball beneath their centers. Parts of the
+gap near the block edges can remain hidden; subsequent arm movement
+and the ball's trajectory determine the actual visible duration.
 
 The cover's apparent occlusion depends on the camera angle. The wrist camera
 can see beneath it. To inspect both policy camera views over an episode, run
@@ -268,7 +298,7 @@ uv run --locked --extra eval dom-vpwem-train-oracle \
 For InterceptFastCover2, use
 [`configs/oracles/intercept_fast_cover2.yaml`](configs/oracles/intercept_fast_cover2.yaml)
 in the same command. It uses the same PPO settings and writes to
-`outputs/oracles/intercept_fast_cover2/`.
+`outputs/oracles/intercept_fast_cover2/fixed_start_v1/`.
 
 The equivalent module command is `python -m dom_vpwem.oracle_train`, and
 `scripts/train_oracle.py` is a source-tree entry point. Inspect the resolved
@@ -302,7 +332,7 @@ uv run --locked --extra eval dom-vpwem-train-oracle \
 
 Training writes local console/JSONL metrics; it does not contact an experiment
 tracking service. The default output directory is
-`outputs/oracles/intercept_fast_cover/`:
+`outputs/oracles/intercept_fast_cover/fixed_start_v1/`:
 
 | File | Purpose |
 | --- | --- |
@@ -318,7 +348,7 @@ Continue an interrupted run with the same config:
 ```bash
 uv run --locked --extra eval dom-vpwem-train-oracle \
   --config configs/oracles/intercept_fast_cover.yaml \
-  --resume outputs/oracles/intercept_fast_cover/training_state.pt
+  --resume outputs/oracles/intercept_fast_cover/fixed_start_v1/training_state.pt
 ```
 
 `total_timesteps` is the total target including work already completed; increase
@@ -353,21 +383,38 @@ bash scripts/generate_training_examples.sh --dry-run
 bash scripts/generate_training_examples.sh
 ```
 
-Both InterceptFast cover variants share one state expert. The shell-game and
-color-sequence tasks each use their own expert, so at most three PPO runs are
-started. These use the YAMLs in `configs/oracles/`, whose default budgets are
+To train the updated Intercept experts and then generate their demonstrations
+without running the shell-game or color-sequence tasks:
+
+```bash
+bash scripts/generate_training_examples.sh --intercepts-only --dry-run
+bash scripts/generate_training_examples.sh --intercepts-only
+```
+
+Each custom task has its own default state expert, including the two covers
+with their different starting arm poses, so at most four PPO runs are started.
+These use the YAMLs in `configs/oracles/`, whose default budgets are
 150 million transitions per expert with success-based early stopping. Existing
 exports under `outputs/oracles/` are reused; interrupted PPO runs with a
 `training_state.pt` are resumed. This command generates demonstration data;
 visuomotor policy training remains a separate step.
 
+The two Intercept experts use `outputs/oracles/intercept_fast_cover/fixed_start_v1/`
+and `outputs/oracles/intercept_fast_cover2/fixed_start_v1/`. Their datasets also
+have a `fixed_start_v1` suffix, and the student configs point to these new
+datasets. Earlier checkpoints and demonstrations remain in their original
+directories and do not skip training or collection for the updated arm poses.
+Shell-game and color-sequence paths are unchanged. Once the current datasets
+are complete, rerunning the command reuses them without training again.
+
 To use checkpoints you already have, supply raw MIKASA `AgentStateOnly` state
-dicts. The two covers can use a compatible upstream InterceptFast expert, and
-the unchanged shell task can use a ShellGameShuffleTouch expert:
+dicts. Validate any upstream or shared InterceptFast expert on the current arm
+poses before using it. The unchanged shell task can use a ShellGameShuffleTouch expert:
 
 ```bash
 bash scripts/generate_training_examples.sh --collect-only \
-  --intercept-checkpoint /path/to/intercept.pt \
+  --intercept-checkpoint /path/to/intercept_cover.pt \
+  --intercept2-checkpoint /path/to/intercept_cover2.pt \
   --shell-checkpoint /path/to/shell.pt \
   --sequence-checkpoint /path/to/sequence.pt
 ```
@@ -375,13 +422,15 @@ bash scripts/generate_training_examples.sh --collect-only \
 `--collect-only` prevents PPO training. Checkpoint sidecars, when present, must
 match the task and observation/action schema. Checkpoints without sidecars
 are checked for network compatibility, and only successful rollouts are saved.
+For compatibility, supplying `--intercept-checkpoint` without
+`--intercept2-checkpoint` explicitly uses that checkpoint for both covers.
 
 The default output locations match the student YAMLs:
 
 | Environment | Dataset directory under `data_mikasa_robo/data_npz/` |
 | --- | --- |
-| InterceptFastCover | `intercept_fast_cover_vla_v0/` |
-| InterceptFastCover2 | `intercept_fast_cover2_vla_v0/` |
+| InterceptFastCover | `intercept_fast_cover_vla_v0_fixed_start_v1/` |
+| InterceptFastCover2 | `intercept_fast_cover2_vla_v0_fixed_start_v1/` |
 | ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0/` |
 | RememberColorSequence3-Long | `remember_color_sequence3_long_vla_v0/` |
 

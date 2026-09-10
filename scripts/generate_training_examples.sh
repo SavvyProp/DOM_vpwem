@@ -8,8 +8,10 @@ Usage: bash scripts/generate_training_examples.sh [options]
 
 Generate datasets for InterceptFastCover, InterceptFastCover2,
 ShellGameShuffleTouchCustom, and RememberColorSequence3-Long.
-One InterceptFast oracle serves both covers. Missing experts are trained
-using the existing PPO configs; --collect-only requires existing experts.
+The covers have different starting arm poses and separate default experts.
+Missing experts use the PPO configs; --collect-only requires existing experts.
+The current Intercept poses use fixed_start_v1 output directories, so older
+experts and demonstrations are preserved and not reused automatically.
 This generates data only; it does not train visuomotor/student policies.
 
 Options:
@@ -20,11 +22,14 @@ Options:
                                (default: max(10 * episodes, num-envs))
   --data-root DIR              NPZ root (default: data_mikasa_robo/data_npz)
   --oracle-root DIR            Oracle root (default: outputs/oracles)
-  --intercept-checkpoint FILE  Existing state oracle for BOTH cover variants
+  --intercept-checkpoint FILE  Existing oracle for Cover; also Cover2 unless
+                               --intercept2-checkpoint overrides it (validate both)
+  --intercept2-checkpoint FILE Existing oracle specifically for Cover2
   --shell-checkpoint FILE      Existing ShellGameShuffleTouch state oracle
   --sequence-checkpoint FILE   Existing RememberColorSequence3-Long state oracle
   --oracle-timesteps N         Override the training budget for missing experts
   --oracle-num-envs N          Override parallel environments for PPO training
+  --intercepts-only           Train/collect just InterceptFastCover and Cover2
   --collect-only              Fail if a required oracle checkpoint is missing
   --dry-run                   Print the plan without starting Python or training
   -h, --help                  Show this help
@@ -51,11 +56,13 @@ MAX_ATTEMPTS=""
 DATA_ROOT="data_mikasa_robo/data_npz"
 ORACLE_ROOT="outputs/oracles"
 INTERCEPT_CHECKPOINT=""
+INTERCEPT2_CHECKPOINT=""
 SHELL_CHECKPOINT=""
 SEQUENCE_CHECKPOINT=""
 ORACLE_TIMESTEPS=""
 ORACLE_NUM_ENVS=""
 COLLECT_ONLY=0
+INTERCEPTS_ONLY=0
 DRY_RUN=0
 
 while (($#)); do
@@ -67,11 +74,13 @@ while (($#)); do
         --data-root) need_value "$@"; DATA_ROOT="$2"; shift 2 ;;
         --oracle-root) need_value "$@"; ORACLE_ROOT="$2"; shift 2 ;;
         --intercept-checkpoint) need_value "$@"; INTERCEPT_CHECKPOINT="$2"; shift 2 ;;
+        --intercept2-checkpoint) need_value "$@"; INTERCEPT2_CHECKPOINT="$2"; shift 2 ;;
         --shell-checkpoint) need_value "$@"; SHELL_CHECKPOINT="$2"; shift 2 ;;
         --sequence-checkpoint) need_value "$@"; SEQUENCE_CHECKPOINT="$2"; shift 2 ;;
         --oracle-timesteps) need_value "$@"; ORACLE_TIMESTEPS="$2"; shift 2 ;;
         --oracle-num-envs) need_value "$@"; ORACLE_NUM_ENVS="$2"; shift 2 ;;
         --collect-only) COLLECT_ONLY=1; shift ;;
+        --intercepts-only) INTERCEPTS_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown option: $1 (see --help)" ;;
@@ -130,6 +139,13 @@ find_checkpoint() {
 
 prepare_oracle() {
     local config_name="$1" supplied="$2" output_dir="$ORACLE_ROOT/$1"
+    case "$config_name" in
+        intercept_fast_cover|intercept_fast_cover2)
+            # Separate the new arm-pose experts from all earlier checkpoints.
+            # Keep this revision aligned with the oracle YAMLs and task data slugs.
+            output_dir="$output_dir/fixed_start_v1"
+            ;;
+    esac
     if [[ -n "$supplied" ]]; then
         [[ -f "$supplied" ]] || die "Checkpoint does not exist: $supplied"
         RESOLVED_CHECKPOINT="$supplied"
@@ -164,12 +180,16 @@ ENV_IDS=(
     ShellGameShuffleTouchCustom-VLA-v0
     RememberColorSequence3-Long-VLA-v0
 )
-ORACLE_CONFIGS=(intercept_fast_cover intercept_fast_cover shell_game_shuffle_touch remember_color_sequence3_long)
-SUPPLIED=("$INTERCEPT_CHECKPOINT" "$INTERCEPT_CHECKPOINT" "$SHELL_CHECKPOINT" "$SEQUENCE_CHECKPOINT")
+ORACLE_CONFIGS=(intercept_fast_cover intercept_fast_cover2 shell_game_shuffle_touch remember_color_sequence3_long)
+SUPPLIED=("$INTERCEPT_CHECKPOINT" "${INTERCEPT2_CHECKPOINT:-$INTERCEPT_CHECKPOINT}" "$SHELL_CHECKPOINT" "$SEQUENCE_CHECKPOINT")
 declare -A CHECKPOINT_CACHE=()
 
 for index in "${!ENV_IDS[@]}"; do
     env_id="${ENV_IDS[$index]}"
+    case "$env_id" in
+        InterceptFastCover-VLA-v0|InterceptFastCover2-VLA-v0) ;;
+        *) (( ! INTERCEPTS_ONLY )) || continue ;;
+    esac
     if complete_dataset "$env_id"; then continue; fi
     oracle="${ORACLE_CONFIGS[$index]}"
     if [[ -z "${CHECKPOINT_CACHE[$oracle]:-}" ]]; then
@@ -186,5 +206,5 @@ done
 if (( DRY_RUN )); then
     printf 'Dry run complete. No training or collection was started.\n'
 else
-    printf 'All four datasets are ready under %s\n' "$DATA_ROOT"
+    printf 'All selected datasets are ready under %s\n' "$DATA_ROOT"
 fi
