@@ -40,9 +40,16 @@ def test_dry_run_plans_separate_experts_for_the_different_cover_start_poses(
     plan = commands(result.stdout)
     training = [cmd for cmd in plan if "dom_vpwem.oracle_train" in cmd]
     collection = [cmd for cmd in plan if "dom_vpwem.collect_demos" in cmd]
-    expected_count = 2 if intercepts_only else 4
+    expected_count = 2 if intercepts_only else 3
     assert len(training) == expected_count
     assert len(collection) == expected_count
+    downloads = [cmd for cmd in plan if "dom_vpwem.dataset_installer" in cmd]
+    assert len(downloads) == (0 if intercepts_only else 1)
+    if downloads:
+        (cmd,) = downloads
+        assert cmd[cmd.index("--task") + 1] == "ShellGameShuffleTouchCustom-VLA-v0"
+        assert cmd[cmd.index("--output-root") + 1] == str(tmp_path / "data with spaces")
+    assert all("ShellGameShuffleTouchCustom-VLA-v0" not in cmd for cmd in collection)
     paths = [cmd[cmd.index("--checkpoint") + 1] for cmd in collection]
     assert paths[0] != paths[1]
     assert paths[1] == str(tmp_path / "oracles/intercept_fast_cover2/fixed_start_v1/best_ckpt.pt")
@@ -128,11 +135,14 @@ if "dom_vpwem.oracle_train" in args:
     output.mkdir(parents=True, exist_ok=True)
     (output / "final_success_ckpt.pt").write_bytes(b"oracle")
 else:
-    output = pathlib.Path(value("--data-root"))
-    marker = output / get_task_spec(value("--env-id")).dataset_slug / ".test_complete"
+    downloading = "dom_vpwem.dataset_installer" in args
+    output = pathlib.Path(value("--output-root" if downloading else "--data-root"))
+    task = get_task_spec(value("--task" if downloading else "--env-id"))
+    marker = output / task.dataset_slug / ".test_complete"
     if "--status" in args:
         sys.exit(0 if marker.exists() else 1)
-    assert pathlib.Path(value("--checkpoint")).is_file()
+    if not downloading:
+        assert pathlib.Path(value("--checkpoint")).is_file()
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("complete")
 """
@@ -158,18 +168,21 @@ else:
     env = {**os.environ, "PYTHON_BIN": str(runner), "PIPELINE_TEST_LOG": str(log)}
     subprocess.run(args, env=env, cwd=tmp_path, check=True, capture_output=True, text=True)
     first = [json.loads(line) for line in log.read_text().splitlines()]
-    expected_count = 2 if intercepts_only else 4
+    expected_count = 2 if intercepts_only else 3
     assert sum("dom_vpwem.oracle_train" in cmd for cmd in first) == expected_count
     assert (
         sum("dom_vpwem.collect_demos" in cmd and "--status" not in cmd for cmd in first)
         == expected_count
+    )
+    assert sum("dom_vpwem.dataset_installer" in cmd for cmd in first) == (
+        0 if intercepts_only else 1
     )
     assert all("--resume" not in cmd for cmd in first)  # Never resume the old arm-pose run.
     for path in old_files:
         assert path.read_bytes() == b"old pose artifact"
     subprocess.run(args, env=env, cwd=tmp_path, check=True, capture_output=True, text=True)
     all_calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(all_calls) == len(first) + expected_count
+    assert len(all_calls) == len(first) + (2 if intercepts_only else 4)
     assert all("--status" in cmd for cmd in all_calls[len(first) :])
 
 
@@ -191,3 +204,84 @@ def test_interrupted_ppo_run_resumes_even_when_best_checkpoint_exists(tmp_path):
         text=True,
     )
     assert "--resume" in commands(result.stdout)[0]
+
+
+def test_collect_only_can_download_shell_without_a_shell_checkpoint(tmp_path):
+    checkpoint = tmp_path / "expert.pt"
+    checkpoint.write_bytes(b"expert")
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--dry-run",
+            "--collect-only",
+            "--intercept-checkpoint",
+            str(checkpoint),
+            "--sequence-checkpoint",
+            str(checkpoint),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = commands(result.stdout)
+    assert len(plan) == 4
+    assert sum("dom_vpwem.dataset_installer" in cmd for cmd in plan) == 1
+    assert not any("dom_vpwem.oracle_train" in cmd for cmd in plan)
+
+
+def test_shell_download_failure_never_falls_back_to_ppo(tmp_path):
+    runner = tmp_path / "fake python"
+    log = tmp_path / "calls.jsonl"
+    runner.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + """
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["PIPELINE_TEST_LOG"], "a") as stream:
+    stream.write(json.dumps(args) + "\\n")
+if "--status" in args:
+    sys.exit(1 if "ShellGameShuffleTouchCustom-VLA-v0" in args else 0)
+if "dom_vpwem.dataset_installer" in args:
+    sys.exit(29)
+raise AssertionError("Must not collect or train a shell oracle after download failure")
+"""
+    )
+    runner.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env={**os.environ, "PYTHON_BIN": str(runner), "PIPELINE_TEST_LOG": str(log)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 29
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert "dom_vpwem.dataset_installer" in calls[-1]
+    assert not any("dom_vpwem.oracle_train" in cmd for cmd in calls)
+
+
+def test_larger_shell_dataset_requires_explicit_local_collection(tmp_path):
+    args = [
+        "bash",
+        str(SCRIPT),
+        "--dry-run",
+        "--episodes",
+        "251",
+        "--oracle-root",
+        str(tmp_path / "oracles"),
+    ]
+    rejected = subprocess.run(args, capture_output=True, text=True)
+    assert rejected.returncode == 2
+    assert "public shell dataset has 250 episodes" in rejected.stderr
+    assert not commands(rejected.stdout)  # Reject before any expensive training starts.
+    subprocess.run(args + ["--intercepts-only"], check=True, capture_output=True, text=True)
+    local = subprocess.run(
+        args + ["--shell-source", "collect"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "configs/oracles/shell_game_shuffle_touch.yaml" in local.stdout
+    assert "dom_vpwem.dataset_installer" not in local.stdout

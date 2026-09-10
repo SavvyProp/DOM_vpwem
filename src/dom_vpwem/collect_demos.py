@@ -92,6 +92,10 @@ def existing_episodes(config: CollectConfig) -> list[Path]:
     if not config.destination.exists():
         return []
     task = get_task_spec(config.env_id)
+    from .dataset_installer import MANIFEST_FILENAME, verify_install
+
+    if (config.destination / MANIFEST_FILENAME).exists():
+        verify_install(config.destination, task, check_hashes=False)
     allowed_ids = {task.env_id}
     if task.env_id == SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID:
         allowed_ids.add(task.base_env_id)

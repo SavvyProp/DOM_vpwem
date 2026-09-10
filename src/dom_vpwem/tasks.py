@@ -30,6 +30,9 @@ class TaskSpec:
     memory_type: str
     language_instruction: str
     public_dataset: bool = True
+    # An unchanged local alias can reuse an upstream (env ID, dataset folder).
+    # Disable public_dataset when changing its behavior or observations.
+    public_dataset_source: tuple[str, str] | None = None
     # Local variants reuse the base task's VLA wrapper configuration. Simulator
     # classes are imported only when register_custom_envs() is called.
     base_env_id: str | None = None
@@ -92,7 +95,8 @@ _TASK_SPECS = {
             "Observe which cup hides the ball, track the cups as they shuffle, "
             "then touch the correct cup."
         ),
-        public_dataset=False,
+        public_dataset=True,
+        public_dataset_source=("ShellGameShuffleTouch-VLA-v0", "shell_game_shuffle_touch_vla_v0"),
         base_env_id="ShellGameShuffleTouch-VLA-v0",
         entry_point="dom_vpwem.custom_envs.shell_game_shuffle_touch:ShellGameShuffleTouch",
     ),

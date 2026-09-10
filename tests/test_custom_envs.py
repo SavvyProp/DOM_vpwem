@@ -39,7 +39,18 @@ def test_custom_metadata_and_config_need_no_simulator_imports():
         assert config.task.max_episode_steps == task.max_episode_steps
         assert config.task.dataset_dir == task.default_dataset_dir
         assert config.train.output_dir == f"outputs/{name}"
-        assert task.public_dataset is False
+        assert task.public_dataset is (env_id == SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID)
+
+
+def test_public_shell_alias_matches_upstream_settings():
+    pytest.importorskip("mikasa_robo_suite")
+    from dom_vpwem.custom_envs.shell_game_shuffle_touch import ShellGameShuffleTouch
+
+    upstream = ShellGameShuffleTouch.__bases__[0]
+    for name in ("CUE_PHASE_STEPS", "SHUFFLE_PHASE_STEPS", "NUM_SWAPS", "SWAP_ARC_HEIGHT"):
+        assert getattr(ShellGameShuffleTouch, name) == getattr(upstream, name), (
+            "Modified shell tasks must stop reusing the public dataset"
+        )
 
 
 def test_custom_registration_preserves_upstream_and_supports_wrappers():
@@ -132,7 +143,7 @@ def test_cover_geometry_and_wrapped_rollout_on_gpu(env_id, centers, half_size):
                     assert len(body.collision_shapes) == 0
                 for entity in cover._objs:
                     render_body = entity.find_component_by_type(sapien.render.RenderBodyComponent)
-                    shape, = render_body.render_shapes
+                    (shape,) = render_body.render_shapes
                     assert isinstance(shape, sapien.render.RenderShapeBox)
                     np.testing.assert_allclose(shape.half_size, half_size)
                     assert shape.material.base_color[3] == 1.0

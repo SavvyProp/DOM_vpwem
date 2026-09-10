@@ -194,18 +194,22 @@ uv run --locked --extra eval python scripts/preview_env.py \
   --env-id ShellGameShuffleTouchCustom-VLA-v0 \
   --output eval_results/shell_game_shuffle_touch_preview.mp4
 
-uv run --locked --extra eval dom-vpwem-train-oracle \
-  --config configs/oracles/shell_game_shuffle_touch.yaml
+uv run --locked --extra data dom-vpwem-install-datasets \
+  --task ShellGameShuffleTouchCustom-VLA-v0
 
-# After collecting custom-task NPZ trajectories:
+# After installing the matching public examples:
 uv run --locked dom-vpwem-train --config configs/shell_game_shuffle_touch.yaml
 ```
 
 Its dataset directory is
 `data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0`.
-The dataset installer excludes this local ID; collect trajectories for your
-customized environment. Pass `--env-id ShellGameShuffleTouchCustom-VLA-v0`
-to the evaluator when using its student checkpoint.
+The dataset installer maps this unchanged alias to the upstream
+`ShellGameShuffleTouch-VLA-v0` release. No oracle training is needed for these
+examples. If you change the task's settings or observations, disable its
+`public_dataset` flag and use `--shell-source collect` with a new data root
+to generate matching demonstrations. Its PPO YAML remains available for that
+case. Pass `--env-id ShellGameShuffleTouchCustom-VLA-v0` to the evaluator when
+using its student checkpoint.
 
 [`RememberColorSequence3Long`](src/dom_vpwem/custom_envs/remember_color_sequence.py)
 subclasses `RememberColor3LongVLAEnv` as **`RememberColorSequence3-Long-VLA-v0`**.
@@ -379,7 +383,7 @@ generates training data for all four custom environments:
 # Inspect the commands without loading Python, creating environments, or training.
 bash scripts/generate_training_examples.sh --dry-run
 
-# Train missing experts and collect 250 successful episodes per task.
+# Download the shell dataset; train missing experts and collect the other tasks.
 bash scripts/generate_training_examples.sh
 ```
 
@@ -391,9 +395,17 @@ bash scripts/generate_training_examples.sh --intercepts-only --dry-run
 bash scripts/generate_training_examples.sh --intercepts-only
 ```
 
-Each custom task has its own default state expert, including the two covers
-with their different starting arm poses, so at most four PPO runs are started.
-These use the YAMLs in `configs/oracles/`, whose default budgets are
+The unchanged shell task downloads the official **250-episode
+ShellGameShuffleTouch** release and converts it to the custom task's NPZ
+directory. It does not train or require a shell oracle. The pinned source is
+`shell_game_shuffle_touch_vla_v0` in the
+[MIKASA LeRobot release](https://huggingface.co/datasets/mikasa-robo/mikasa-robo-vla-lerobot),
+not the separate shuffle-color-lamp task. Download or conversion failures
+stop the command and never fall back to PPO.
+
+The two covers and the color-sequence task have separate default state
+experts, so at most three PPO runs are started. These use the YAMLs in
+`configs/oracles/`, whose default budgets are
 150 million transitions per expert with success-based early stopping. Existing
 exports under `outputs/oracles/` are reused; interrupted PPO runs with a
 `training_state.pt` are resumed. This command generates demonstration data;
@@ -409,21 +421,24 @@ are complete, rerunning the command reuses them without training again.
 
 To use checkpoints you already have, supply raw MIKASA `AgentStateOnly` state
 dicts. Validate any upstream or shared InterceptFast expert on the current arm
-poses before using it. The unchanged shell task can use a ShellGameShuffleTouch expert:
+poses before using it. The shell dataset is downloaded automatically in this command:
 
 ```bash
 bash scripts/generate_training_examples.sh --collect-only \
   --intercept-checkpoint /path/to/intercept_cover.pt \
   --intercept2-checkpoint /path/to/intercept_cover2.pt \
-  --shell-checkpoint /path/to/shell.pt \
   --sequence-checkpoint /path/to/sequence.pt
 ```
 
-`--collect-only` prevents PPO training. Checkpoint sidecars, when present, must
+`--collect-only` prevents PPO training and still permits the shell download.
+Checkpoint sidecars, when present, must
 match the task and observation/action schema. Checkpoints without sidecars
 are checked for network compatibility, and only successful rollouts are saved.
 For compatibility, supplying `--intercept-checkpoint` without
 `--intercept2-checkpoint` explicitly uses that checkpoint for both covers.
+For a modified shell task, `--shell-source collect` selects local PPO training
+and collection instead. Supplying `--shell-checkpoint` also selects local
+collection unless it conflicts with an explicit `--shell-source download`.
 
 The default output locations match the student YAMLs:
 
@@ -434,13 +449,16 @@ The default output locations match the student YAMLs:
 | ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0/` |
 | RememberColorSequence3-Long | `remember_color_sequence3_long_vla_v0/` |
 
-Each successful episode is stored as a compressed `train_data_000000.npz`,
+Each locally collected successful episode is stored as a compressed `train_data_000000.npz`,
 with the `rgb`, `proprio`, and `action` arrays described below, plus rewards,
 success flags, episode length, seed, environment ID, and checkpoint hash.
 The collector retains the cue, blank gaps, and waiting period before the
 successful action. Images and privileged expert state come from the same
 simulator instance. Action labels record what reaches the controller, including
 the zero actions enforced during the shell-game cue and shuffle.
+The downloaded shell episodes use the same required RGB/proprio/action arrays
+and an installer manifest recording the original upstream task and checksums;
+their optional fields follow the public-dataset format described below.
 
 Use `--episodes N` to change the total successful-episode target per task,
 `--num-envs N` to change the collection batch size (default 4), and
@@ -449,6 +467,9 @@ separate from oracle validation seeds. The default attempt limit is ten times
 the episode target, or one full batch if larger. If an expert produces too few
 successes, collection stops with an error and retains completed episodes.
 `--max-attempts N` raises this total limit, including attempts from prior runs.
+The shell download always keeps the complete 250-episode release, even when
+`--episodes` is smaller. Requesting more than 250 requires
+`--shell-source collect`; this is checked before any PPO training starts.
 
 Rerun the same command to resume: completed datasets are validated and reused,
 and partial collections continue with fresh seeds using `collection.json`.
@@ -460,7 +481,7 @@ to contain successful demonstrations of that task. Partial external datasets
 without a collection manifest cannot be extended by this command.
 
 The script requires the MIKASA GPU simulation/rendering stack and task assets.
-It uses `uv run --locked --extra eval --inexact python` by default; set
+It uses `uv run --locked --extra eval --extra data --inexact python` by default; set
 `PYTHON_BIN=/path/to/python` to use an existing environment with the project
 dependencies installed. All relative paths are resolved from the repository
 root. See `--help` for checkpoint paths and PPO budget/environment overrides.
@@ -537,7 +558,7 @@ uv run --locked python -c \
 
 ## Dataset
 
-Install both supported public datasets with one command:
+Install all three supported public datasets with one command:
 
 ```bash
 uv run --locked --extra data dom-vpwem-install-datasets
@@ -550,7 +571,7 @@ The equivalent source-tree script is
 uv run --locked --extra data python scripts/install_datasets.py
 ```
 
-The command downloads only the two task folders from the official
+The command downloads only the three task folders from the official
 [MIKASA LeRobot v3 release](https://huggingface.co/datasets/mikasa-robo/mikasa-robo-vla-lerobot)
 at the immutable commit
 `fa5417a266d1cb87ed7715c3dd2d0e4edc067b04`. It streams the Parquet state and
@@ -563,7 +584,11 @@ data_mikasa_robo/data_npz/
 │   ├── train_data_000000.npz
 │   ├── ...
 │   └── .dom_vpwem_dataset.json
-└── shell_game_touch_vla_v0/
+├── shell_game_touch_vla_v0/
+│   ├── train_data_000000.npz
+│   ├── ...
+│   └── .dom_vpwem_dataset.json
+└── shell_game_shuffle_touch_custom_vla_v0/
     ├── train_data_000000.npz
     ├── ...
     └── .dom_vpwem_dataset.json
@@ -574,7 +599,12 @@ Install just one task by environment ID, dataset slug, or short alias:
 ```bash
 uv run --locked --extra data dom-vpwem-install-datasets --task touch
 uv run --locked --extra data dom-vpwem-install-datasets --task shuffle
+uv run --locked --extra data dom-vpwem-install-datasets --task shuffle-touch
 ```
+
+`shuffle` retains its original meaning: the shuffle-color-lamp task.
+`shuffle-touch` downloads the plain shuffle-touch task into its local alias's
+directory, preserving the upstream environment ID in the source manifest.
 
 Conversion happens in a sibling staging directory. Every episode is validated
 and recorded with its byte size and SHA-256 digest before the completed task is
@@ -585,8 +615,8 @@ the network. Run a full integrity check later with:
 uv run --locked dom-vpwem-install-datasets --verify-only
 ```
 
-Task selection defaults to both for verification as well; append `--task
-touch` or `--task shuffle` if only one was installed.
+Task selection defaults to all three for verification as well; append
+`--task touch`, `--task shuffle`, or `--task shuffle-touch` if only one was installed.
 
 Use `--force` to build and verify a replacement before atomically swapping an
 existing installer-managed task. Unmarked directories are never merged or
@@ -594,7 +624,7 @@ overwritten without that explicit flag. Downloads are resumable in
 `<output-root>/.cache/huggingface`; `--cache-dir` selects another cache, and
 `--offline` permits cached-only installation.
 
-Allow roughly 2 GiB for the two decoded NPZ datasets in addition to the compact
+Allow roughly 3 GiB for the three decoded NPZ datasets in addition to the compact
 Hugging Face cache and temporary staging space. The source videos are the
 official release's AV1-encoded camera streams; use locally collected NPZ or the
 larger lossless RLDS release if exact pre-video pixel values are required.

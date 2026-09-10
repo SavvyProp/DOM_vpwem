@@ -12,6 +12,7 @@ import tempfile
 import uuid
 import warnings
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -48,14 +49,17 @@ def _task_aliases() -> dict[str, str]:
         "shell-game-touch": "ShellGameTouch-VLA-v0",
         "shuffle": "ShellGameShuffleColorLampTouch-VLA-v0",
         "shuffle-color": "ShellGameShuffleColorLampTouch-VLA-v0",
-        "shell-game-shuffle-color-lamp-touch": (
-            "ShellGameShuffleColorLampTouch-VLA-v0"
-        ),
+        "shuffle-touch": "ShellGameShuffleTouchCustom-VLA-v0",
+        "shell-game-shuffle-color-lamp-touch": ("ShellGameShuffleColorLampTouch-VLA-v0"),
     }
     for env_id, task in TASK_SPECS.items():
         aliases[env_id] = env_id
         aliases[env_id.lower()] = env_id
         aliases[task.dataset_slug] = env_id
+        if task.public_dataset_source is not None:
+            source_id, source_slug = task.public_dataset_source
+            for alias in (source_id, source_id.lower(), source_slug):
+                aliases[alias] = env_id
     return aliases
 
 
@@ -79,7 +83,7 @@ def resolve_tasks(values: Sequence[str] | None) -> list[TaskSpec]:
     for value in values:
         env_id = TASK_ALIASES.get(value, TASK_ALIASES.get(value.lower()))
         if env_id is None:
-            aliases = "touch, shuffle, all"
+            aliases = "touch, shuffle, shuffle-touch, all"
             supported = ", ".join(TASK_SPECS)
             raise DatasetInstallError(
                 f"Unknown task {value!r}. Use one of {supported}, or an alias: {aliases}."
@@ -104,6 +108,14 @@ def dataset_path(output_root: str | Path, task: TaskSpec) -> Path:
     """Return the final NPZ path for a registered task."""
 
     return Path(output_root).expanduser() / task.dataset_slug
+
+
+def _source_task(task: TaskSpec) -> TaskSpec:
+    """Resolve an unchanged local alias without relabeling upstream metadata."""
+    if task.public_dataset_source is None:
+        return task
+    env_id, dataset_slug = task.public_dataset_source
+    return replace(task, env_id=env_id, dataset_slug=dataset_slug, public_dataset_source=None)
 
 
 def _read_manifest(path: Path) -> dict[str, Any]:
@@ -165,6 +177,15 @@ def _validate_manifest_header(
     source = manifest.get("source")
     if not isinstance(source, Mapping):
         raise DatasetInstallError(f"Install manifest {manifest_path}: 'source' must be an object.")
+    # Older manifests for the original public tasks omit these source fields.
+    # Alias installs must always record and validate their actual upstream task.
+    if task.public_dataset_source is not None or "env_id" in source or "dataset_slug" in source:
+        expected_source = _source_task(task)
+        if (source.get("env_id"), source.get("dataset_slug")) != (
+            expected_source.env_id,
+            expected_source.dataset_slug,
+        ):
+            raise DatasetInstallError(f"Install manifest {manifest_path}: upstream task mismatch.")
     resolved_revision = source.get("resolved_revision")
     if not isinstance(resolved_revision, str) or not _COMMIT_RE.fullmatch(resolved_revision):
         raise DatasetInstallError(
@@ -341,6 +362,9 @@ def build_manifest(
 ) -> dict[str, Any]:
     """Build the completion marker written after all episode files."""
 
+    source_task = _source_task(task)
+    if result.metadata.env_id != source_task.env_id:
+        raise DatasetInstallError("Converted source environment does not match the requested task.")
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "dataset_format": DATASET_FORMAT,
@@ -350,6 +374,8 @@ def build_manifest(
         },
         "source": {
             "format": "LeRobotDataset-v3",
+            "env_id": source_task.env_id,
+            "dataset_slug": source_task.dataset_slug,
             "repo_id": repo_id,
             "requested_revision": requested_revision,
             "resolved_revision": resolved_revision,
@@ -549,7 +575,7 @@ def install_datasets(
         print_fn(f"Hugging Face cache: {effective_cache_dir}")
         snapshot_root = Path(
             fetch_snapshot(
-                pending,
+                [_source_task(task) for task in pending],
                 repo_id=repo_id,
                 revision=revision,
                 cache_dir=effective_cache_dir,
@@ -560,7 +586,8 @@ def install_datasets(
         resolved_revision = _resolved_revision(snapshot_root, revision)
 
         for task in pending:
-            source_root = snapshot_root / task.dataset_slug
+            source_task = _source_task(task)
+            source_root = snapshot_root / source_task.dataset_slug
             if not source_root.is_dir():
                 raise DatasetInstallError(
                     f"Downloaded snapshot does not contain task directory {source_root}."
@@ -580,7 +607,7 @@ def install_datasets(
                 result = converter(
                     source_root,
                     staging,
-                    task,
+                    source_task,
                     progress=report_progress,
                 )
                 manifest = build_manifest(
@@ -630,8 +657,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="TASK",
         help=(
-            "Task environment ID, dataset slug, or alias ('touch'/'shuffle'). "
-            "Repeat to select multiple tasks. Default: both supported tasks."
+            "Task environment ID, dataset slug, or alias ('touch'/'shuffle'/'shuffle-touch'). "
+            "Repeat to select multiple tasks. Default: all tasks with public datasets."
         ),
     )
     parser.add_argument(
@@ -718,3 +745,7 @@ __all__ = [
     "resolve_tasks",
     "verify_install",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
