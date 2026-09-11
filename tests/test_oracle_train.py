@@ -21,8 +21,8 @@ from dom_vpwem.oracle_train import (
 @pytest.mark.parametrize(
     ("variant", "horizon", "run_suffix"),
     [
-        ("intercept_fast_cover", 60, "/fixed_start_v1"),
-        ("intercept_fast_cover2", 60, "/fixed_start_v1"),
+        ("intercept_fast_cover", 60, "/collision_cue5_v1"),
+        ("intercept_fast_cover2", 60, "/collision_cue5_v1"),
         ("shell_game_shuffle_touch", 60, ""),
         ("remember_color_sequence3_long", 600, ""),
     ],

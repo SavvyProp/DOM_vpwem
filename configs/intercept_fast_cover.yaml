@@ -2,7 +2,7 @@
 # Collect trajectories with the cover present; no public dataset exists for this variant.
 task:
   env_id: InterceptFastCover-VLA-v0
-  dataset_dir: data_mikasa_robo/data_npz/intercept_fast_cover_vla_v0_fixed_start_v1
+  dataset_dir: data_mikasa_robo/data_npz/intercept_fast_cover_vla_v0_collision_cue5_v1
   max_episode_steps: 60
 
 train:

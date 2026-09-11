@@ -7,6 +7,17 @@ import sapien
 import torch
 from mani_skill.utils.structs.pose import Pose
 from mikasa_robo_suite.vla.memory_envs.remember_color_vla import RememberColor3LongVLAEnv
+from mikasa_robo_suite.vla.utils.wrappers import CurriculumPhaseNoopActionWrapper
+
+
+class CuePhaseNoopActionWrapper(CurriculumPhaseNoopActionWrapper):
+    """Suppress all robot actions through the cue sequence, including its gaps."""
+
+    def _get_noop_mask(self):
+        # Read live per-environment counters so partial resets immediately
+        # suppress the new episode without affecting the rest of the batch.
+        base = self.env.unwrapped
+        return base.elapsed_steps < base.cue_steps_per_env
 
 
 class RememberColorSequence3Long(RememberColor3LongVLAEnv):
@@ -16,11 +27,15 @@ class RememberColorSequence3Long(RememberColor3LongVLAEnv):
     with replacement, so repetitions are allowed. Sequence length and the
     final blank delay are sampled independently for each episode.
 
+    The registered action wrapper freezes the arm during the entire cue
+    sequence, then releases it for the final blank delay and answer phase.
+
     All durations are control steps. Defaults use at most 100 sequence steps
     plus 450 delay steps, leaving at least 50 of the registered 600 steps for
     answering. Increase the registered/configured horizon if extending this.
     """
 
+    CURRICULUM_WRAPPER = CuePhaseNoopActionWrapper
     TARGET_FROM_END = 2
     SEQUENCE_LENGTH_RANGE = (3, 7)
     COLOR_STEPS = 10

@@ -18,6 +18,7 @@ def register_custom_envs() -> None:
 
     Requires the ``eval`` extra. Registration creates no simulator instances.
     Each variant lives in its own module and subclasses an upstream task.
+    A class can override ``CURRICULUM_WRAPPER`` for its own action timing.
     """
     from mani_skill.utils.registration import REGISTERED_ENVS, register_env
     from mikasa_robo_suite.vla.utils.apply_wrappers import VLA_WRAPPER_CONFIGS
@@ -40,7 +41,12 @@ def register_custom_envs() -> None:
                 max_episode_steps=task.max_episode_steps,
                 asset_download_ids=list(base_spec.asset_download_ids or []),
             )(env_class)
-        VLA_WRAPPER_CONFIGS[task.env_id] = replace(wrapper_config)
+        VLA_WRAPPER_CONFIGS[task.env_id] = replace(
+            wrapper_config,
+            curriculum_wrapper=getattr(
+                env_class, "CURRICULUM_WRAPPER", wrapper_config.curriculum_wrapper
+            ),
+        )
 
 
 __all__ = ["register_custom_envs"]

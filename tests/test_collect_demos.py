@@ -196,12 +196,22 @@ def test_privileged_read_does_not_advance_and_restores_rgb_mode_on_error():
     assert base._obs_mode == "rgb"
 
 
-def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch):
+@pytest.mark.parametrize("phase", ["cue_and_delay", "cue", "intercept"])
+def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch, phase):
     gym = pytest.importorskip("gymnasium")
     pytest.importorskip("mikasa_robo_suite")
     from mikasa_robo_suite.vla.utils.wrappers import CurriculumPhaseNoopActionWrapper
 
     import dom_vpwem.demo_env as module
+    from dom_vpwem.custom_envs.intercept_fast_cover import InterceptCueNoopActionWrapper
+    from dom_vpwem.custom_envs.remember_color_sequence import CuePhaseNoopActionWrapper
+
+    wrapper = {
+        "cue_and_delay": CurriculumPhaseNoopActionWrapper,
+        "cue": CuePhaseNoopActionWrapper,
+        "intercept": InterceptCueNoopActionWrapper,
+    }[phase]
+    cue_steps = 5 if phase == "intercept" else 1
 
     class RawEnv(gym.Env):
         _obs_mode = "rgb"
@@ -211,8 +221,13 @@ def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch):
         single_action_space = gym.spaces.Box(-1, 1, shape=(7,), dtype=np.float32)
         action_space = gym.spaces.Box(-1, 1, shape=(2, 7), dtype=np.float32)
         observation_space = gym.spaces.Dict({})
+        CUE_STEPS = cue_steps
         cue_steps_per_env = torch.ones(2, dtype=torch.int64)
-        empty_steps_per_env = torch.zeros(2, dtype=torch.int64)
+        empty_steps_per_env = torch.full((2,), 10 if phase == "cue" else 0, dtype=torch.int64)
+
+        @property
+        def elapsed_steps(self):
+            return torch.full((2,), self.t)
 
         def reset(self, *, seed=None, options=None):
             self.t = 0
@@ -239,15 +254,16 @@ def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch):
         "_load_runtime",
         lambda: (
             lambda *args, **kwargs: raw,
-            lambda env, **kwargs: CurriculumPhaseNoopActionWrapper(env),
+            lambda env, **kwargs: wrapper(env),
         ),
     )
     env = DemoEnv(INTERCEPT_FAST_COVER_ENV_ID, num_envs=2)
     try:
-        env.step(torch.ones(2, 7))
-        assert torch.all(env.executed_action == 0)
-        assert torch.all(env.oracle_observation()["state"] == 1)
-        assert raw.t == 1 and raw._obs_mode == "rgb"
+        for step in range(cue_steps):
+            env.step(torch.ones(2, 7))
+            assert torch.all(env.executed_action == 0)
+            assert torch.all(env.oracle_observation()["state"] == step + 1)
+            assert raw.t == step + 1 and raw._obs_mode == "rgb"
         env.step(torch.ones(2, 7))
         assert torch.all(env.executed_action == 1)
     finally:

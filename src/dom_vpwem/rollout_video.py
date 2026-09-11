@@ -38,7 +38,7 @@ class RolloutFrameSink(Protocol):
         observation: Mapping[str, np.ndarray],
         *,
         step: int,
-        success: bool,
+        success: bool | None,
     ) -> None: ...
 
 
@@ -78,10 +78,10 @@ def _annotate_frame(
     camera_frame: np.ndarray,
     *,
     episode_index: int,
-    seed: int,
+    seed: int | None,
     step: int,
     horizon: int,
-    success: bool,
+    success: bool | None,
     image_module: Any,
     image_draw: Any,
     image_font: Any,
@@ -106,7 +106,8 @@ def _annotate_frame(
     secondary_font = _default_font(image_font, size=13)
     draw.text(
         (8, 3),
-        f"Episode {episode_index + 1}  |  seed {seed}  |  step {step}/{horizon}",
+        f"Episode {episode_index + 1}  |  seed {seed if seed is not None else 'unknown'}"
+        f"  |  step {step}/{horizon}",
         fill=(245, 245, 245),
         font=primary_font,
     )
@@ -115,7 +116,10 @@ def _annotate_frame(
 
     status_text = "SUCCESS: YES" if success else "SUCCESS: NO"
     status_fill = (40, 130, 75) if success else (120, 75, 35)
-    badge_left = output_width - 112
+    if success is None:
+        status_text = "SUCCESS: UNKNOWN"
+        status_fill = (70, 75, 85)
+    badge_left = output_width - (156 if success is None else 112)
     draw.rounded_rectangle((badge_left, 25, output_width - 7, 44), radius=4, fill=status_fill)
     draw.text(
         (badge_left + 7, 28),
@@ -140,7 +144,7 @@ class Mp4RolloutRecorder:
         *,
         fps: int = DEFAULT_VIDEO_FPS,
         episode_index: int,
-        seed: int,
+        seed: int | None,
         horizon: int,
     ) -> None:
         self.output = Path(output)
@@ -197,7 +201,7 @@ class Mp4RolloutRecorder:
         observation: Mapping[str, np.ndarray],
         *,
         step: int,
-        success: bool,
+        success: bool | None,
     ) -> None:
         if not self._entered or self._closed:
             raise RuntimeError("Use Mp4RolloutRecorder as a context manager before writing.")

@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -61,9 +62,15 @@ def test_custom_registration_preserves_upstream_and_supports_wrappers():
     from mikasa_robo_suite.vla.utils.apply_wrappers import VLA_WRAPPER_CONFIGS
 
     from dom_vpwem.custom_envs import register_custom_envs
-    from dom_vpwem.custom_envs.intercept_fast_cover import InterceptFastCover
+    from dom_vpwem.custom_envs.intercept_fast_cover import (
+        InterceptCueNoopActionWrapper,
+        InterceptFastCover,
+    )
     from dom_vpwem.custom_envs.intercept_fast_cover2 import InterceptFastCover2
-    from dom_vpwem.custom_envs.remember_color_sequence import RememberColorSequence3Long
+    from dom_vpwem.custom_envs.remember_color_sequence import (
+        CuePhaseNoopActionWrapper,
+        RememberColorSequence3Long,
+    )
     from dom_vpwem.custom_envs.shell_game_shuffle_touch import ShellGameShuffleTouch
     from dom_vpwem.mikasa_env import _load_runtime
 
@@ -86,7 +93,16 @@ def test_custom_registration_preserves_upstream_and_supports_wrappers():
         assert first[env_id].cls is cls
         assert issubclass(cls, originals[base_id].cls)
         assert gym.spec(env_id).max_episode_steps == get_task_spec(env_id).max_episode_steps
-        assert VLA_WRAPPER_CONFIGS[env_id] == original_wrappers[base_id]
+        expected_wrapper = original_wrappers[base_id]
+        if env_id in (INTERCEPT_FAST_COVER_ENV_ID, INTERCEPT_FAST_COVER2_ENV_ID):
+            expected_wrapper = replace(
+                expected_wrapper, curriculum_wrapper=InterceptCueNoopActionWrapper
+            )
+        elif env_id == REMEMBER_COLOR_SEQUENCE3_LONG_ENV_ID:
+            expected_wrapper = replace(
+                expected_wrapper, curriculum_wrapper=CuePhaseNoopActionWrapper
+            )
+        assert VLA_WRAPPER_CONFIGS[env_id] == expected_wrapper
         assert VLA_WRAPPER_CONFIGS[env_id] is not original_wrappers[base_id]
         assert first[env_id].asset_download_ids == originals[base_id].asset_download_ids
         assert first[env_id].asset_download_ids is not originals[base_id].asset_download_ids
@@ -140,7 +156,9 @@ def test_cover_geometry_and_wrapped_rollout_on_gpu(env_id, centers, half_size):
                 np.testing.assert_allclose(cover.pose.p.cpu(), [center])
                 for body in cover._bodies:
                     assert isinstance(body, sapien.physx.PhysxRigidStaticComponent)
-                    assert len(body.collision_shapes) == 0
+                    (collision,) = body.collision_shapes
+                    assert isinstance(collision, sapien.physx.PhysxCollisionShapeBox)
+                    np.testing.assert_allclose(collision.half_size, half_size)
                 for entity in cover._objs:
                     render_body = entity.find_component_by_type(sapien.render.RenderBodyComponent)
                     (shape,) = render_body.render_shapes

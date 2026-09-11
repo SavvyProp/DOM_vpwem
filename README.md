@@ -36,8 +36,8 @@ simulator and dataset contract come from
 | `ShellGameTouch-VLA-v0` | [`shell_game_touch.yaml`](configs/shell_game_touch.yaml) | 30 | Cups remain stationary after covering the ball; there is no cup-shuffle phase. |
 | `ShellGameShuffleTouchCustom-VLA-v0` (local variant) | [`shell_game_shuffle_touch.yaml`](configs/shell_game_shuffle_touch.yaml) | 60 | Track the cup hiding the ball through a shuffle, then touch it. Editable subclass of MIKASA's short shuffle-and-touch task. |
 | `RememberColorSequence3-Long-VLA-v0` (local variant) | [`remember_color_sequence3_long.yaml`](configs/remember_color_sequence3_long.yaml) | 600 | Observe a random-length color sequence with blank gaps, then select the second-to-last color from three choices. |
-| `InterceptFastCover-VLA-v0` (local variant) | [`intercept_fast_cover.yaml`](configs/intercept_fast_cover.yaml) | 60 | InterceptFast with an opaque, collisionless box above the table. Requires locally collected training data. |
-| `InterceptFastCover2-VLA-v0` (local variant) | [`intercept_fast_cover2.yaml`](configs/intercept_fast_cover2.yaml) | 60 | Two opaque, collisionless sections with the cover's middle third removed along the ball's travel direction. Requires locally collected training data. |
+| `InterceptFastCover-VLA-v0` (local variant) | [`intercept_fast_cover.yaml`](configs/intercept_fast_cover.yaml) | 60 | InterceptFast with a solid opaque cover and a five-step robot cue pause. Requires locally collected training data. |
+| `InterceptFastCover2-VLA-v0` (local variant) | [`intercept_fast_cover2.yaml`](configs/intercept_fast_cover2.yaml) | 60 | Two solid opaque sections separated by an opening, with a five-step robot cue pause. Requires locally collected training data. |
 
 Train and evaluate the stationary-cup task with:
 
@@ -64,8 +64,10 @@ benchmark result for this repository's VLA rewrite.
 subclasses upstream `InterceptFastVLAEnv` and adds a static, opaque gray box.
 Its center is **(-0.20, -0.30, 0.25) m** and its full X/Y/Z dimensions are
 **(0.40, 0.40, 0.10) m**. The bounds are X=[-0.40, 0.00], Y=[-0.50, -0.10],
-Z=[0.20, 0.30]. Only visual geometry is added: the robot and ball pass through
-the box. Launch randomization, speed (0.75–1.0 m/s along +Y), cameras, controls,
+Z=[0.20, 0.30]. A static collision box matches the visual geometry and blocks
+the robot. The rolling ball has a 2 cm radius and travels beneath the 20 cm
+underside with 16 cm of clearance. There are no support walls below the cover.
+Launch randomization, speed (0.75–1.0 m/s along +Y), cameras, controls,
 rewards, and the 60-step horizon are inherited from InterceptFast.
 
 Both cover variants use a **fixed arm starting pose**. Cover1 aims toward the
@@ -78,18 +80,25 @@ its original mount and field of view and moves with the arm after reset.
 
 At either starting pose, the launch range and its first 0.10 seconds of travel
 fit inside the wrist camera's field of view without either cover blocking the sightline.
-That provides three observations at 20 Hz, including the reset frame, when
-the arm holds its starting pose. Policies can move the arm immediately;
-there is no added action freeze or delay in the ball launch. Rendered GPU
-tests check initial ball visibility when the simulator is available.
+That provides three observations at 20 Hz, including the reset frame. Both
+variants now replace robot actions with zeros for `elapsed_steps < CUE_STEPS`,
+where `CUE_STEPS = 5` by default: a 0.25-second cue period. The ball launches
+and continues moving during this period; the sixth action is the first one
+the robot can execute. The existing 60-step horizon includes these five steps.
+This action wrapper applies to PPO training, collection, and evaluation, and
+the collector saves the executed zeros. Per-environment counters restart the
+cue after individual resets. Ball visibility is only guaranteed for the
+initial 0.10 seconds described above; it may enter occlusion before the cue ends.
+Rendered GPU tests check initial ball visibility when the simulator is available.
 
-This replaces the earlier target-facing starting pose. Regenerate cover
-demonstrations for the new pose, and validate or retrain existing Intercept
-oracles before reuse. The covers now have different starting arm poses;
-use their separate PPO configs by default, or validate a shared expert on both.
+Regenerate cover demonstrations for the solid geometry and cue pause, and
+validate or retrain existing Intercept oracles before reuse. The covers have
+different starting arm poses; use their separate PPO configs by default, or
+validate a shared expert on both.
 The generation script stores these updated experts and demonstrations under
-`fixed_start_v1` paths, preserving older artifacts and avoiding automatic reuse
-of the earlier poses. Reruns resume or reuse work for the current poses. Use
+`collision_cue5_v1` paths, preserving the earlier `fixed_start_v1` artifacts and
+avoiding automatic reuse of experts or data without collisions and the cue.
+Reruns resume or reuse work for the current task. Use
 fresh `--data-root` and `--oracle-root` directories for another independent run.
 
 [`InterceptFastCover2`](src/dom_vpwem/custom_envs/intercept_fast_cover2.py)
@@ -239,14 +248,24 @@ accepts `target_from_end=n`; the supplied configs and task metadata describe
 the default n=2 task. Use a separate registered ID/config for experiments with
 a different rule so datasets and results remain identifiable.
 
-Success and rewards are disabled until the answer cubes appear. Robot actions
-remain enabled, as in the upstream long task. The state oracle receives the
-target and phase timing as privileged information; the RGB student receives
+Success and rewards are disabled until the answer cubes appear. All robot
+actions are replaced with zeros while `elapsed_steps < cue_steps_per_env`,
+covering every color and the blank gaps between colors. Actions resume as soon
+as the last cue ends, including during the final blank delay. The registered
+cue wrapper applies to PPO training, demonstration collection, and student
+evaluation; the collector records the resulting zero actions. The state oracle
+receives the target and phase timing as privileged information; the RGB student receives
 only camera images and proprioception through the standard adapter. Its state
 layout includes additional timing fields, so upstream RememberColor oracle
 weights cannot be assumed to load unchanged. Resets support individual
 episodes within a parallel batch without changing other episodes' sequences.
 The local reporting labels are Long/TemporalOrder.
+
+Previously collected NPZ episodes still contain their original cue-phase
+movements. Collect into a fresh `--data-root` to generate demonstrations with
+suppression; the collection script reuses completed datasets at an existing
+destination. Re-evaluate existing oracle checkpoints under the new action
+timing before collecting, or train a new oracle in a separate output directory.
 
 ```bash
 uv run --locked --extra eval python scripts/preview_env.py \
@@ -274,8 +293,9 @@ To add another variant:
    `base_env_id`, and `entry_point="module.path:ClassName"`.
 3. Add a training YAML if needed. The shared registrar imports the entry point,
    registers it with ManiSkill/Gymnasium, and copies the base task's asset
-   requirements and VLA wrapper configuration. No per-variant changes to the
-   adapter are needed.
+   requirements and VLA wrapper configuration. A local class can set
+   `CURRICULUM_WRAPPER` to override its action wrapper without changing the
+   upstream task. No per-variant changes to the adapter are needed.
 
 Choose a base wrapper configuration compatible with the new task's observation
 and action semantics. Importing task metadata or `dom_vpwem.custom_envs` itself
@@ -302,7 +322,7 @@ uv run --locked --extra eval dom-vpwem-train-oracle \
 For InterceptFastCover2, use
 [`configs/oracles/intercept_fast_cover2.yaml`](configs/oracles/intercept_fast_cover2.yaml)
 in the same command. It uses the same PPO settings and writes to
-`outputs/oracles/intercept_fast_cover2/fixed_start_v1/`.
+`outputs/oracles/intercept_fast_cover2/collision_cue5_v1/`.
 
 The equivalent module command is `python -m dom_vpwem.oracle_train`, and
 `scripts/train_oracle.py` is a source-tree entry point. Inspect the resolved
@@ -336,7 +356,7 @@ uv run --locked --extra eval dom-vpwem-train-oracle \
 
 Training writes local console/JSONL metrics; it does not contact an experiment
 tracking service. The default output directory is
-`outputs/oracles/intercept_fast_cover/fixed_start_v1/`:
+`outputs/oracles/intercept_fast_cover/collision_cue5_v1/`:
 
 | File | Purpose |
 | --- | --- |
@@ -352,7 +372,7 @@ Continue an interrupted run with the same config:
 ```bash
 uv run --locked --extra eval dom-vpwem-train-oracle \
   --config configs/oracles/intercept_fast_cover.yaml \
-  --resume outputs/oracles/intercept_fast_cover/fixed_start_v1/training_state.pt
+  --resume outputs/oracles/intercept_fast_cover/collision_cue5_v1/training_state.pt
 ```
 
 `total_timesteps` is the total target including work already completed; increase
@@ -411,11 +431,11 @@ exports under `outputs/oracles/` are reused; interrupted PPO runs with a
 `training_state.pt` are resumed. This command generates demonstration data;
 visuomotor policy training remains a separate step.
 
-The two Intercept experts use `outputs/oracles/intercept_fast_cover/fixed_start_v1/`
-and `outputs/oracles/intercept_fast_cover2/fixed_start_v1/`. Their datasets also
-have a `fixed_start_v1` suffix, and the student configs point to these new
+The two Intercept experts use `outputs/oracles/intercept_fast_cover/collision_cue5_v1/`
+and `outputs/oracles/intercept_fast_cover2/collision_cue5_v1/`. Their datasets also
+have a `collision_cue5_v1` suffix, and the student configs point to these new
 datasets. Earlier checkpoints and demonstrations remain in their original
-directories and do not skip training or collection for the updated arm poses.
+directories and do not skip training or collection for the solid covers and cue pause.
 Shell-game and color-sequence paths are unchanged. Once the current datasets
 are complete, rerunning the command reuses them without training again.
 
@@ -444,8 +464,8 @@ The default output locations match the student YAMLs:
 
 | Environment | Dataset directory under `data_mikasa_robo/data_npz/` |
 | --- | --- |
-| InterceptFastCover | `intercept_fast_cover_vla_v0_fixed_start_v1/` |
-| InterceptFastCover2 | `intercept_fast_cover2_vla_v0_fixed_start_v1/` |
+| InterceptFastCover | `intercept_fast_cover_vla_v0_collision_cue5_v1/` |
+| InterceptFastCover2 | `intercept_fast_cover2_vla_v0_collision_cue5_v1/` |
 | ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0/` |
 | RememberColorSequence3-Long | `remember_color_sequence3_long_vla_v0/` |
 
@@ -645,6 +665,52 @@ The installer writes `done=True` only on the final row and records
 `episode_length`; the public LeRobot export does not include stepwise success,
 reward, or language fields, none of which are consumed by this trainer.
 
+### Export a saved episode as MP4
+
+[`scripts/export_dataset_video.py`](scripts/export_dataset_video.py) selects the
+first successful episode in numeric filename order and exports its saved
+overhead and wrist RGB views side by side. It uses the existing video encoder
+from the `eval` extra and requires no simulator, GPU, or policy checkpoint.
+Run these commands from the repository root with the project environment installed:
+
+```bash
+.venv/bin/python scripts/export_dataset_video.py \
+  --dataset-dir data_mikasa_robo/data_npz/intercept_fast_cover_vla_v0_collision_cue5_v1 \
+  --output eval_results/videos/intercept_fast_cover_dataset.mp4
+
+.venv/bin/python scripts/export_dataset_video.py \
+  --dataset-dir data_mikasa_robo/data_npz/intercept_fast_cover2_vla_v0_collision_cue5_v1 \
+  --output eval_results/videos/intercept_fast_cover2_dataset.mp4
+
+.venv/bin/python scripts/export_dataset_video.py \
+  --dataset-dir data_mikasa_robo/data_npz/remember_color_sequence3_long_vla_v0 \
+  --output eval_results/videos/remember_color_sequence3_long_dataset.mp4
+
+.venv/bin/python scripts/export_dataset_video.py \
+  --dataset-dir data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0 \
+  --allow-unknown-success \
+  --output eval_results/videos/shell_game_shuffle_touch_dataset.mp4
+```
+
+Success is checked using `success` within the valid episode prefix, or
+`success_once` when stepwise flags are absent. An explicit failure never
+qualifies. The downloaded shell dataset has no success metadata, so its command
+explicitly permits an unverified episode and displays `SUCCESS: UNKNOWN`.
+This option still prefers a verified success if one exists. Missing seeds are
+displayed as unknown as well.
+
+Use `--episode-id N` to select the numeric ID in `train_data_<N>.npz` (the success
+check still applies), and `--fps 10` for slower playback instead of the default
+20 FPS. Omitting `--output` creates a dataset/episode-named MP4 under
+`eval_results/videos/`. The overlay numbers episodes starting at 1; the console
+prints the selected source filename. Padding after `done` or `episode_length`
+is excluded. With only `success_once`, the badge shows the overall episode
+outcome throughout because the success timestep is unknown.
+
+Locally collected frames precede their actions, while their success flags
+describe the action outcomes. The MP4 preserves that alignment; the final
+post-action image is not stored in these datasets and cannot be included.
+
 ### Collect new trajectories for the upstream tasks
 
 For the four custom variants, use the Bash entry point above. To generate new
@@ -817,9 +883,12 @@ contracts, canonical success evaluation, normalization, and VPWEM
 forward/backward/sampling shapes. A real MIKASA rollout still requires its GPU
 simulator stack and is intentionally not mocked as evidence of task success.
 Custom-environment tests check lazy imports, registration, wrapper compatibility,
-and dataset selection. The cover scene test checks actual geometry, absence of
-collisions, and reset/step observations when CUDA is available; it is skipped
-on machines without a working NVIDIA GPU.
+and dataset selection. The cover scene test checks matching visual/collision
+geometry and reset/step observations when CUDA is available; it is skipped on
+machines without a working NVIDIA GPU. Headless CPU physics tests verify that
+the production cover colliders stop a sphere dropped onto them while leaving
+normal ball launch trajectories unchanged. Cue-wrapper tests cover the
+five-step release boundary, action formats, and individual resets in a batch.
 Oracle tests exercise PPO updates and checkpoint continuation on a small CPU
 test environment, verify time-limit bootstrapping and advantage boundaries,
 and check compatibility with MIKASA's collector network. A separate state-oracle

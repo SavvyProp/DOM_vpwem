@@ -161,6 +161,44 @@ def test_repeated_colors_have_blank_gaps_and_independent_answer_times(make_env):
                 assert torch.all(torch.pdist(hidden_positions) >= env.MANIP_MIN_CUBE_DISTANCE)
 
 
+@pytest.mark.parametrize("numpy_action", [False, True])
+@pytest.mark.parametrize("flat_action", [False, True])
+def test_cue_action_suppression_covers_gaps_releases_at_end_and_handles_partial_reset(
+    make_env, numpy_action, flat_action
+):
+    env = make_env((1, 2))
+    env.cue_steps_per_env[:] = torch.tensor([40, 55])
+    env.empty_steps_per_env[:] = 7
+    wrapper = env.CURRICULUM_WRAPPER(env)
+    action = torch.full((7,) if flat_action else (2, 7), 0.75)
+    if numpy_action:
+        action = action.numpy()
+
+    for step, frozen in (
+        (0, [True, True]),
+        (10, [True, True]),  # Blank gap after the first color.
+        (29, [True, True]),  # Last step of another inter-color gap.
+        (39, [True, True]),  # Last cue step for the first episode.
+        (40, [False, True]),  # First episode is now in the final blank delay.
+        (54, [False, True]),
+        (55, [False, False]),  # Both cue sequences have ended.
+        (62, [False, False]),  # Both answer phases have begun.
+    ):
+        env._elapsed_steps[:] = step
+        actual = torch.as_tensor(wrapper.action(action))
+        expected = torch.full((2, 7), 0.75)
+        expected[frozen] = 0
+        if flat_action and not any(frozen):
+            expected = expected[0]
+        torch.testing.assert_close(actual, expected)
+        assert torch.all(torch.as_tensor(action) == 0.75)  # Preserve PPO's sampled actions.
+
+    reset_subset(env, [1], seeds=[91])
+    actual = torch.as_tensor(wrapper.action(action))
+    torch.testing.assert_close(actual[0], torch.full((7,), 0.75))
+    torch.testing.assert_close(actual[1], torch.zeros(7))
+
+
 def test_only_target_in_answer_phase_wins_and_choices_are_not_reteleported(make_env):
     env = make_env((8,))
     target = int(env.true_color_indices[0])

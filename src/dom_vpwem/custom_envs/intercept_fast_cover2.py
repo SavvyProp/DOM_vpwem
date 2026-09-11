@@ -8,8 +8,9 @@ class InterceptFastCover2(InterceptFastCover):
 
     Keep the original X/Z bounds and the outer thirds of its Y extent:
     [-0.50, -0.3666667] and [-0.2333333, -0.10] metres. The middle
-    13.33 cm is open. Both sections are opaque and collisionless.
+    13.33 cm is open. Both sections have matching visual and collision boxes.
     A higher fixed arm pose frames both launch and the opening from above.
+    The inherited wrapper holds the arm for the first five control steps.
     """
 
     # Frame the launch range and the gap with one fixed 90-degree wrist view.

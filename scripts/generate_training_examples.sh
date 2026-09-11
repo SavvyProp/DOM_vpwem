@@ -11,7 +11,7 @@ ShellGameShuffleTouchCustom, and RememberColorSequence3-Long.
 ShellGameShuffleTouch downloads the matching public dataset by default.
 The other three tasks train missing experts with their separate PPO configs;
 --collect-only requires existing experts for tasks being collected locally.
-The current Intercept poses use fixed_start_v1 output directories, so older
+The solid Intercept covers and five-step cue use collision_cue5_v1 directories, so older
 experts and demonstrations are preserved and not reused automatically.
 This generates data only; it does not train visuomotor/student policies.
 
@@ -159,9 +159,9 @@ prepare_oracle() {
     local config_name="$1" supplied="$2" output_dir="$ORACLE_ROOT/$1"
     case "$config_name" in
         intercept_fast_cover|intercept_fast_cover2)
-            # Separate the new arm-pose experts from all earlier checkpoints.
+            # Separate solid-cover/cue experts from earlier checkpoints.
             # Keep this revision aligned with the oracle YAMLs and task data slugs.
-            output_dir="$output_dir/fixed_start_v1"
+            output_dir="$output_dir/collision_cue5_v1"
             ;;
     esac
     if [[ -n "$supplied" ]]; then

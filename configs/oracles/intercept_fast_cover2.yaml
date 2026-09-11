@@ -1,6 +1,6 @@
 # Privileged-state PPO oracle; separate from the visuomotor student config.
 env_id: InterceptFastCover2-VLA-v0
-output_dir: outputs/oracles/intercept_fast_cover2/fixed_start_v1
+output_dir: outputs/oracles/intercept_fast_cover2/collision_cue5_v1
 seed: 123
 device: cuda
 sim_backend: gpu

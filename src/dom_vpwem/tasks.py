@@ -102,8 +102,8 @@ _TASK_SPECS = {
     ),
     INTERCEPT_FAST_COVER_ENV_ID: TaskSpec(
         env_id=INTERCEPT_FAST_COVER_ENV_ID,
-        # New starting arm pose; keep earlier camera/pose demonstrations separate.
-        dataset_slug="intercept_fast_cover_vla_v0_fixed_start_v1",
+        # Solid covers and five-step cue; keep earlier demonstrations separate.
+        dataset_slug="intercept_fast_cover_vla_v0_collision_cue5_v1",
         max_episode_steps=60,
         split="Short",
         memory_type="Spatial",
@@ -132,7 +132,7 @@ _TASK_SPECS = {
     ),
     INTERCEPT_FAST_COVER2_ENV_ID: TaskSpec(
         env_id=INTERCEPT_FAST_COVER2_ENV_ID,
-        dataset_slug="intercept_fast_cover2_vla_v0_fixed_start_v1",
+        dataset_slug="intercept_fast_cover2_vla_v0_collision_cue5_v1",
         max_episode_steps=60,
         split="Short",
         memory_type="Spatial",

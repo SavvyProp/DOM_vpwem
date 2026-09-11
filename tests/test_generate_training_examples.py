@@ -52,8 +52,10 @@ def test_dry_run_plans_separate_experts_for_the_different_cover_start_poses(
     assert all("ShellGameShuffleTouchCustom-VLA-v0" not in cmd for cmd in collection)
     paths = [cmd[cmd.index("--checkpoint") + 1] for cmd in collection]
     assert paths[0] != paths[1]
-    assert paths[1] == str(tmp_path / "oracles/intercept_fast_cover2/fixed_start_v1/best_ckpt.pt")
-    assert paths[0] == str(tmp_path / "oracles/intercept_fast_cover/fixed_start_v1/best_ckpt.pt")
+    assert paths[1] == str(
+        tmp_path / "oracles/intercept_fast_cover2/collision_cue5_v1/best_ckpt.pt"
+    )
+    assert paths[0] == str(tmp_path / "oracles/intercept_fast_cover/collision_cue5_v1/best_ckpt.pt")
     # Direct PPO commands and the Bash entry point must use the same run layout.
     for cmd in training:
         config = SCRIPT.parent.parent / cmd[cmd.index("--config") + 1]
@@ -159,9 +161,13 @@ else:
     ]
     old_files = []
     for name in ("intercept_fast_cover", "intercept_fast_cover2"):
-        for filename in ("final_success_ckpt.pt", "training_state.pt"):
-            old_files.append(tmp_path / "oracle outputs" / name / filename)
-        old_files.append(tmp_path / "demo outputs" / f"{name}_vla_v0" / ".test_complete")
+        for revision in ("", "fixed_start_v1"):
+            for filename in ("final_success_ckpt.pt", "training_state.pt"):
+                old_files.append(tmp_path / "oracle outputs" / name / revision / filename)
+            suffix = f"_{revision}" if revision else ""
+            old_files.append(
+                tmp_path / "demo outputs" / f"{name}_vla_v0{suffix}" / ".test_complete"
+            )
     for path in old_files:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"old pose artifact")
@@ -187,7 +193,7 @@ else:
 
 
 def test_interrupted_ppo_run_resumes_even_when_best_checkpoint_exists(tmp_path):
-    output = tmp_path / "oracles" / "intercept_fast_cover" / "fixed_start_v1"
+    output = tmp_path / "oracles" / "intercept_fast_cover" / "collision_cue5_v1"
     output.mkdir(parents=True)
     (output / "best_ckpt.pt").write_bytes(b"early checkpoint")
     (output / "training_state.pt").write_bytes(b"resume")
