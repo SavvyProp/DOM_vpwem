@@ -2,7 +2,7 @@
 # Collect new trajectories for this task; uses the default student model settings.
 task:
   env_id: RememberColorSequence3-Long-VLA-v0
-  dataset_dir: data_mikasa_robo/data_npz/remember_color_sequence3_long_vla_v0
+  dataset_dir: data_mikasa_robo/data_npz/remember_color_sequence3_long_vla_v0_wait_for_choices_v1
   max_episode_steps: 600
 
 train:

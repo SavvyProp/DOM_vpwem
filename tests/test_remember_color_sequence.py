@@ -163,12 +163,12 @@ def test_repeated_colors_have_blank_gaps_and_independent_answer_times(make_env):
 
 @pytest.mark.parametrize("numpy_action", [False, True])
 @pytest.mark.parametrize("flat_action", [False, True])
-def test_cue_action_suppression_covers_gaps_releases_at_end_and_handles_partial_reset(
+def test_action_suppression_waits_for_visible_choices_and_handles_partial_reset(
     make_env, numpy_action, flat_action
 ):
     env = make_env((1, 2))
     env.cue_steps_per_env[:] = torch.tensor([40, 55])
-    env.empty_steps_per_env[:] = 7
+    env.empty_steps_per_env[:] = torch.tensor([7, 11])
     wrapper = env.CURRICULUM_WRAPPER(env)
     action = torch.full((7,) if flat_action else (2, 7), 0.75)
     if numpy_action:
@@ -179,12 +179,19 @@ def test_cue_action_suppression_covers_gaps_releases_at_end_and_handles_partial_
         (10, [True, True]),  # Blank gap after the first color.
         (29, [True, True]),  # Last step of another inter-color gap.
         (39, [True, True]),  # Last cue step for the first episode.
-        (40, [False, True]),  # First episode is now in the final blank delay.
+        (40, [True, True]),  # First episode is now in the final blank delay.
+        (46, [True, True]),  # Choices are still hidden in both episodes.
+        (47, [False, True]),  # Release only the episode with visible choices.
         (54, [False, True]),
-        (55, [False, False]),  # Both cue sequences have ended.
-        (62, [False, False]),  # Both answer phases have begun.
+        (55, [False, True]),  # Second episode enters its final blank delay.
+        (65, [False, True]),  # Last step before the second episode's choices.
+        (66, [False, False]),  # Both answer phases have begun.
     ):
         env._elapsed_steps[:] = step
+        env.evaluate()
+        for row, is_frozen in enumerate(frozen):
+            visible = sum(cube.pose.p[row, 2] < 1 for cube in env.cubes.values())
+            assert (visible < 3) if is_frozen else (visible == 3)
         actual = torch.as_tensor(wrapper.action(action))
         expected = torch.full((2, 7), 0.75)
         expected[frozen] = 0

@@ -196,7 +196,7 @@ def test_privileged_read_does_not_advance_and_restores_rgb_mode_on_error():
     assert base._obs_mode == "rgb"
 
 
-@pytest.mark.parametrize("phase", ["cue_and_delay", "cue", "intercept"])
+@pytest.mark.parametrize("phase", ["cue_and_delay", "sequence", "intercept"])
 def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch, phase):
     gym = pytest.importorskip("gymnasium")
     pytest.importorskip("mikasa_robo_suite")
@@ -208,10 +208,11 @@ def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch, ph
 
     wrapper = {
         "cue_and_delay": CurriculumPhaseNoopActionWrapper,
-        "cue": CuePhaseNoopActionWrapper,
+        "sequence": CuePhaseNoopActionWrapper,
         "intercept": InterceptCueNoopActionWrapper,
     }[phase]
     cue_steps = 5 if phase == "intercept" else 1
+    blank_steps = 10 if phase == "sequence" else 0
 
     class RawEnv(gym.Env):
         _obs_mode = "rgb"
@@ -223,7 +224,7 @@ def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch, ph
         observation_space = gym.spaces.Dict({})
         CUE_STEPS = cue_steps
         cue_steps_per_env = torch.ones(2, dtype=torch.int64)
-        empty_steps_per_env = torch.full((2,), 10 if phase == "cue" else 0, dtype=torch.int64)
+        empty_steps_per_env = torch.full((2,), blank_steps, dtype=torch.int64)
 
         @property
         def elapsed_steps(self):
@@ -259,7 +260,7 @@ def test_demo_env_captures_actions_after_real_curriculum_wrapper(monkeypatch, ph
     )
     env = DemoEnv(INTERCEPT_FAST_COVER_ENV_ID, num_envs=2)
     try:
-        for step in range(cue_steps):
+        for step in range(cue_steps + blank_steps):
             env.step(torch.ones(2, 7))
             assert torch.all(env.executed_action == 0)
             assert torch.all(env.oracle_observation()["state"] == step + 1)

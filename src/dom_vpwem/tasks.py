@@ -116,7 +116,8 @@ _TASK_SPECS = {
     ),
     REMEMBER_COLOR_SEQUENCE3_LONG_ENV_ID: TaskSpec(
         env_id=REMEMBER_COLOR_SEQUENCE3_LONG_ENV_ID,
-        dataset_slug="remember_color_sequence3_long_vla_v0",
+        # Keep demonstrations that moved during the blank delay separate.
+        dataset_slug="remember_color_sequence3_long_vla_v0_wait_for_choices_v1",
         max_episode_steps=600,
         split="Long",
         memory_type="TemporalOrder",

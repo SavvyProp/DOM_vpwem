@@ -24,7 +24,7 @@ from dom_vpwem.oracle_train import (
         ("intercept_fast_cover", 60, "/collision_cue5_v1"),
         ("intercept_fast_cover2", 60, "/collision_cue5_v1"),
         ("shell_game_shuffle_touch", 60, ""),
-        ("remember_color_sequence3_long", 600, ""),
+        ("remember_color_sequence3_long", 600, "/wait_for_choices_v1"),
     ],
 )
 def test_oracle_config_cli_overrides_and_validates_yaml(tmp_path, variant, horizon, run_suffix):

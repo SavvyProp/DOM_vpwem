@@ -249,9 +249,10 @@ the default n=2 task. Use a separate registered ID/config for experiments with
 a different rule so datasets and results remain identifiable.
 
 Success and rewards are disabled until the answer cubes appear. All robot
-actions are replaced with zeros while `elapsed_steps < cue_steps_per_env`,
-covering every color and the blank gaps between colors. Actions resume as soon
-as the last cue ends, including during the final blank delay. The registered
+actions are replaced with zeros while
+`elapsed_steps < cue_steps_per_env + empty_steps_per_env`, covering every color,
+the gaps between colors, and the final blank delay. Actions resume when all
+three answer cubes appear. The registered
 cue wrapper applies to PPO training, demonstration collection, and student
 evaluation; the collector records the resulting zero actions. The state oracle
 receives the target and phase timing as privileged information; the RGB student receives
@@ -261,11 +262,12 @@ weights cannot be assumed to load unchanged. Resets support individual
 episodes within a parallel batch without changing other episodes' sequences.
 The local reporting labels are Long/TemporalOrder.
 
-Previously collected NPZ episodes still contain their original cue-phase
-movements. Collect into a fresh `--data-root` to generate demonstrations with
-suppression; the collection script reuses completed datasets at an existing
-destination. Re-evaluate existing oracle checkpoints under the new action
-timing before collecting, or train a new oracle in a separate output directory.
+The dataset now uses a `wait_for_choices_v1` suffix, and the default oracle
+directory is `outputs/oracles/remember_color_sequence3_long/wait_for_choices_v1`.
+The generation script trains and collects into these new paths so earlier
+checkpoints and demonstrations that moved during the blank delay are not
+reused automatically. Existing NPZ episodes and MP4s retain their old behavior;
+export a new video after collecting the updated dataset.
 
 ```bash
 uv run --locked --extra eval python scripts/preview_env.py \
@@ -280,7 +282,7 @@ uv run --locked dom-vpwem-train --config configs/remember_color_sequence3_long.y
 ```
 
 Its local dataset directory is
-`data_mikasa_robo/data_npz/remember_color_sequence3_long_vla_v0`.
+`data_mikasa_robo/data_npz/remember_color_sequence3_long_vla_v0_wait_for_choices_v1`.
 This variant is excluded from public dataset downloads. The existing
 single-color cue recordings do not demonstrate this sequence task.
 
@@ -436,8 +438,11 @@ and `outputs/oracles/intercept_fast_cover2/collision_cue5_v1/`. Their datasets a
 have a `collision_cue5_v1` suffix, and the student configs point to these new
 datasets. Earlier checkpoints and demonstrations remain in their original
 directories and do not skip training or collection for the solid covers and cue pause.
-Shell-game and color-sequence paths are unchanged. Once the current datasets
-are complete, rerunning the command reuses them without training again.
+The color-sequence expert uses
+`outputs/oracles/remember_color_sequence3_long/wait_for_choices_v1/`, with the
+same `wait_for_choices_v1` suffix on its dataset to require waiting until the
+choices appear. Shell-game paths are unchanged. Once the current datasets are
+complete, rerunning the command reuses them without training again.
 
 To use checkpoints you already have, supply raw MIKASA `AgentStateOnly` state
 dicts. Validate any upstream or shared InterceptFast expert on the current arm
@@ -467,7 +472,7 @@ The default output locations match the student YAMLs:
 | InterceptFastCover | `intercept_fast_cover_vla_v0_collision_cue5_v1/` |
 | InterceptFastCover2 | `intercept_fast_cover2_vla_v0_collision_cue5_v1/` |
 | ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0/` |
-| RememberColorSequence3-Long | `remember_color_sequence3_long_vla_v0/` |
+| RememberColorSequence3-Long | `remember_color_sequence3_long_vla_v0_wait_for_choices_v1/` |
 
 Each locally collected successful episode is stored as a compressed `train_data_000000.npz`,
 with the `rgb`, `proprio`, and `action` arrays described below, plus rewards,
@@ -683,7 +688,7 @@ Run these commands from the repository root with the project environment install
   --output eval_results/videos/intercept_fast_cover2_dataset.mp4
 
 .venv/bin/python scripts/export_dataset_video.py \
-  --dataset-dir data_mikasa_robo/data_npz/remember_color_sequence3_long_vla_v0 \
+  --dataset-dir data_mikasa_robo/data_npz/remember_color_sequence3_long_vla_v0_wait_for_choices_v1 \
   --output eval_results/videos/remember_color_sequence3_long_dataset.mp4
 
 .venv/bin/python scripts/export_dataset_video.py \

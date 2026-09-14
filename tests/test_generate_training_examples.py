@@ -56,6 +56,10 @@ def test_dry_run_plans_separate_experts_for_the_different_cover_start_poses(
         tmp_path / "oracles/intercept_fast_cover2/collision_cue5_v1/best_ckpt.pt"
     )
     assert paths[0] == str(tmp_path / "oracles/intercept_fast_cover/collision_cue5_v1/best_ckpt.pt")
+    if not intercepts_only:
+        assert paths[2] == str(
+            tmp_path / "oracles/remember_color_sequence3_long/wait_for_choices_v1/best_ckpt.pt"
+        )
     # Direct PPO commands and the Bash entry point must use the same run layout.
     for cmd in training:
         config = SCRIPT.parent.parent / cmd[cmd.index("--config") + 1]
@@ -115,7 +119,7 @@ def test_supplied_experts_skip_training_and_missing_collect_only_fails(tmp_path)
 
 
 @pytest.mark.parametrize("intercepts_only", [False, True])
-def test_script_ignores_old_intercept_artifacts_and_reuses_new_completed_runs(
+def test_script_ignores_old_task_artifacts_and_reuses_new_completed_runs(
     tmp_path, intercepts_only
 ):
     runner = tmp_path / "fake python"
@@ -160,8 +164,12 @@ else:
         *(["--intercepts-only"] if intercepts_only else []),
     ]
     old_files = []
-    for name in ("intercept_fast_cover", "intercept_fast_cover2"):
-        for revision in ("", "fixed_start_v1"):
+    for name, revisions in (
+        ("intercept_fast_cover", ("", "fixed_start_v1")),
+        ("intercept_fast_cover2", ("", "fixed_start_v1")),
+        ("remember_color_sequence3_long", ("",)),
+    ):
+        for revision in revisions:
             for filename in ("final_success_ckpt.pt", "training_state.pt"):
                 old_files.append(tmp_path / "oracle outputs" / name / revision / filename)
             suffix = f"_{revision}" if revision else ""
@@ -170,7 +178,7 @@ else:
             )
     for path in old_files:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"old pose artifact")
+        path.write_bytes(b"old task artifact")
     env = {**os.environ, "PYTHON_BIN": str(runner), "PIPELINE_TEST_LOG": str(log)}
     subprocess.run(args, env=env, cwd=tmp_path, check=True, capture_output=True, text=True)
     first = [json.loads(line) for line in log.read_text().splitlines()]
@@ -183,9 +191,9 @@ else:
     assert sum("dom_vpwem.dataset_installer" in cmd for cmd in first) == (
         0 if intercepts_only else 1
     )
-    assert all("--resume" not in cmd for cmd in first)  # Never resume the old arm-pose run.
+    assert all("--resume" not in cmd for cmd in first)  # Never resume an earlier task version.
     for path in old_files:
-        assert path.read_bytes() == b"old pose artifact"
+        assert path.read_bytes() == b"old task artifact"
     subprocess.run(args, env=env, cwd=tmp_path, check=True, capture_output=True, text=True)
     all_calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(all_calls) == len(first) + (2 if intercepts_only else 4)

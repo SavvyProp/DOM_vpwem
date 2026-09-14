@@ -11,13 +11,14 @@ from mikasa_robo_suite.vla.utils.wrappers import CurriculumPhaseNoopActionWrappe
 
 
 class CuePhaseNoopActionWrapper(CurriculumPhaseNoopActionWrapper):
-    """Suppress all robot actions through the cue sequence, including its gaps."""
+    """Suppress robot actions through the cues and delay until choices appear."""
 
     def _get_noop_mask(self):
         # Read live per-environment counters so partial resets immediately
         # suppress the new episode without affecting the rest of the batch.
         base = self.env.unwrapped
-        return base.elapsed_steps < base.cue_steps_per_env
+        # Match the answer-phase boundary used to reveal the choice cubes.
+        return base.elapsed_steps < base.cue_steps_per_env + base.empty_steps_per_env
 
 
 class RememberColorSequence3Long(RememberColor3LongVLAEnv):
@@ -28,7 +29,7 @@ class RememberColorSequence3Long(RememberColor3LongVLAEnv):
     final blank delay are sampled independently for each episode.
 
     The registered action wrapper freezes the arm during the entire cue
-    sequence, then releases it for the final blank delay and answer phase.
+    sequence and final blank delay, then releases it when the choices appear.
 
     All durations are control steps. Defaults use at most 100 sequence steps
     plus 450 delay steps, leaving at least 50 of the registered 600 steps for
