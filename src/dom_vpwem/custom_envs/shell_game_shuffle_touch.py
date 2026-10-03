@@ -17,5 +17,5 @@ class ShellGameShuffleTouch(ShellGameShuffleTouchVLAEnv):
     # Inclusive ranges, in control steps except for the number of swaps.
     CUE_PHASE_STEPS = [1, 5]
     SHUFFLE_PHASE_STEPS = [20, 35]
-    NUM_SWAPS = [2, 4]
+    NUM_SWAPS = [1, 2]
     SWAP_ARC_HEIGHT = 0.06  # metres

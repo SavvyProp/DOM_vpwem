@@ -128,6 +128,10 @@ def _validate_resume_compatibility(
         raise ValueError("Resume checkpoint task configuration does not match")
     if saved.model != current.model:
         raise ValueError("Resume checkpoint model configuration does not match")
+    for item in fields(current):
+        if item.name not in {"task", "model", "train"}:
+            if getattr(saved, item.name, None) != getattr(current, item.name):
+                raise ValueError(f"Resume checkpoint {item.name} configuration does not match")
 
     mismatches = [
         item.name
@@ -227,7 +231,7 @@ def load_training_checkpoint(
         raise ValueError(
             f"Unsupported checkpoint format {checkpoint.get('format_version')!r}"
         )
-    saved_config = ExperimentConfig.from_dict(checkpoint["config"])
+    saved_config = type(config).from_dict(checkpoint["config"])
     _validate_resume_compatibility(saved_config, config)
     model.load_state_dict(checkpoint["model"], strict=True)
     ema_model.load_state_dict(checkpoint["ema_model"], strict=True)
@@ -254,7 +258,10 @@ def _remove_old_checkpoints(output_dir: Path, keep: int) -> None:
         path.unlink()
 
 
-def train(config: ExperimentConfig) -> Path:
+def train(
+    config: ExperimentConfig, *, dataset_factory=None, model_factory=None, batch_preparer=None,
+) -> Path:
+    """Train baseline VPWEM, or an explicitly supplied separate policy variant."""
     config.validate()
     set_seed(config.train.seed)
     device = torch.device(config.train.device)
@@ -264,7 +271,10 @@ def train(config: ExperimentConfig) -> Path:
     maximum_memory_steps = math.ceil(
         config.task.max_episode_steps / config.model.memory_subsample_ratio
     )
-    dataset = MikasaNpzDataset(
+    dataset_factory = MikasaNpzDataset if dataset_factory is None else dataset_factory
+    model_factory = VPWEM if model_factory is None else model_factory
+    batch_preparer = prepare_batch if batch_preparer is None else batch_preparer
+    dataset = dataset_factory(
         config.task.dataset_dir,
         obs_steps=config.model.obs_steps,
         horizon=config.model.action_horizon,
@@ -296,7 +306,7 @@ def train(config: ExperimentConfig) -> Path:
         **loader_options,
     )
 
-    model = VPWEM(config.model).to(device)
+    model = model_factory(config.model).to(device)
     # A full resume checkpoint is authoritative. The optional encoder checkpoint
     # is initialization for a new run and must precede the EMA/optimizer copies.
     if config.train.vision_encoder_checkpoint and not config.train.resume:
@@ -354,11 +364,12 @@ def train(config: ExperimentConfig) -> Path:
     batches = cycle(loader)
     model.train()
     running_loss = 0.0
+    running_metrics: dict[str, float] = {}
     running_count = 0
     interval_start = time.monotonic()
 
     for step in range(start_step + 1, config.train.gradient_steps + 1):
-        batch = prepare_batch(next(batches), stats, device)
+        batch = batch_preparer(next(batches), stats, device)
         optimizer.zero_grad(set_to_none=True)
         autocast = (
             torch.autocast(device_type="cuda", dtype=torch.float16)
@@ -378,6 +389,8 @@ def train(config: ExperimentConfig) -> Path:
         scheduler.step()
         update_ema(ema_model, model, config.model.ema_decay)
         running_loss += float(loss.detach())
+        for key, value in getattr(model, "loss_metrics", {}).items():
+            running_metrics[key] = running_metrics.get(key, 0.0) + float(value)
         running_count += 1
 
         if step % config.train.log_every == 0 or step == 1:
@@ -387,12 +400,14 @@ def train(config: ExperimentConfig) -> Path:
                 "loss": running_loss / max(running_count, 1),
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "seconds": elapsed,
+                **{key: value / max(running_count, 1) for key, value in running_metrics.items()},
             }
             rendered = json.dumps(metric, sort_keys=True)
             print(rendered, flush=True)
             with metrics_path.open("a", encoding="utf-8") as handle:
                 handle.write(rendered + "\n")
             running_loss = 0.0
+            running_metrics.clear()
             running_count = 0
             interval_start = time.monotonic()
 

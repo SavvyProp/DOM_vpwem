@@ -176,8 +176,10 @@ class ObservationEncoder(nn.Module):
             rgb = rgb / 255.0
         top = rgb[..., :3].permute(0, 1, 4, 2, 3).reshape(-1, 3, *rgb.shape[2:4])
         wrist = rgb[..., 3:6].permute(0, 1, 4, 2, 3).reshape(-1, 3, *rgb.shape[2:4])
-        top = self._crop(top)
-        wrist = self._crop(wrist)
+        # PyTorch 2.2 CPU GroupNorm backward cannot mix channels-last input
+        # with contiguous gradients at 1x1 features. Use a consistent layout.
+        top = self._crop(top).contiguous()
+        wrist = self._crop(wrist).contiguous()
         top_features = self.top_encoder(top)
         wrist_features = self.wrist_encoder(wrist)
         proprio = proprio.float().reshape(batch * time, self.proprio_dim)

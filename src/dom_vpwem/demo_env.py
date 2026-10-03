@@ -95,6 +95,23 @@ class DemoEnv:
     def oracle_observation(self):
         return privileged_observation(self.env.unwrapped, self.info)
 
+    def tracking_labels(self):
+        """Logical hidden-ball XY and visibility, aligned with the current RGB.
+
+        The simulator parks the ball offscreen during shuffling. Track its cup
+        instead, without calling evaluate() or stepping the scene again.
+        """
+        import torch
+
+        base = self.env.unwrapped
+        cups = torch.stack(
+            [base.mug_left.pose.p, base.mug_center.pose.p, base.mug_right.pose.p], dim=1
+        )
+        rows = torch.arange(self.num_envs, device=cups.device)
+        xy = cups[rows, base.cup_with_ball_number.long(), :2]
+        hidden = base.elapsed_steps >= base.cue_steps_per_env
+        return {"tracking_xy": xy, "tracking_hidden": hidden}
+
     def step(self, action):
         obs, reward, terminated, truncated, self.info = self.env.step(action)
         return obs, reward, terminated, truncated, self.info

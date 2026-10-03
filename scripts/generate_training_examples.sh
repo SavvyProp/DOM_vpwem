@@ -8,8 +8,7 @@ Usage: bash scripts/generate_training_examples.sh [options]
 
 Generate datasets for InterceptFastCover, InterceptFastCover2,
 ShellGameShuffleTouchCustom, and RememberColorSequence3-Long.
-ShellGameShuffleTouch downloads the matching public dataset by default.
-The other three tasks train missing experts with their separate PPO configs;
+All four tasks train missing experts with their separate PPO configs;
 --collect-only requires existing experts for tasks being collected locally.
 The solid Intercept covers and five-step cue use collision_cue5_v1 directories.
 RememberColorSequence waits for visible choices and uses wait_for_choices_v1.
@@ -17,8 +16,7 @@ Older experts and demonstrations are preserved and not reused automatically.
 This generates data only; it does not train visuomotor/student policies.
 
 Options:
-  --episodes N                 Target episodes per task (default: 250); shell
-                               download keeps the full 250-episode release
+  --episodes N                 Target episodes per task (default: 250)
   --num-envs N                 Parallel collection environments (default: 4)
   --seed N                     First collection seed (default: 100000)
   --max-attempts N             Total attempts per task, including prior runs
@@ -28,7 +26,7 @@ Options:
   --intercept-checkpoint FILE  Existing oracle for Cover; also Cover2 unless
                                --intercept2-checkpoint overrides it (validate both)
   --intercept2-checkpoint FILE Existing oracle specifically for Cover2
-  --shell-source MODE          download (default) or collect for a modified task
+  --shell-source MODE          collect (default); public data has different swaps
   --shell-checkpoint FILE      Existing shell oracle; implies local collection
   --sequence-checkpoint FILE   Existing RememberColorSequence3-Long state oracle
   --oracle-timesteps N         Override the training budget for missing experts
@@ -41,8 +39,7 @@ Options:
 Complete, validated datasets are reused. Interrupted collections resume with
 new seeds and never overwrite saved episodes. Keep seed, num-envs, and oracle
 weights unchanged when resuming. Use a new data root for a new experiment.
-The shell download is converted to NPZ in shell_game_shuffle_touch_custom_vla_v0.
-Download failures stop the script; they never trigger shell PPO training.
+Shell data uses swaps1_2_tracking_v1 and includes hidden-ball tracking labels.
 
 By default commands use: uv run --locked --extra eval --extra data --inexact python
 Set PYTHON_BIN to a Python executable with the project dependencies installed
@@ -98,18 +95,13 @@ for number in "$EPISODES" "$NUM_ENVS" "${MAX_ATTEMPTS:-1}" "${ORACLE_TIMESTEPS:-
 done
 [[ "$SEED" =~ ^(0|[1-9][0-9]*)$ ]] || die "Seed must be a nonnegative integer"
 if [[ -z "$SHELL_SOURCE" ]]; then
-    if [[ -n "$SHELL_CHECKPOINT" ]]; then SHELL_SOURCE=collect; else SHELL_SOURCE=download; fi
+    SHELL_SOURCE=collect
 fi
 case "$SHELL_SOURCE" in
-    download|collect) ;;
+    collect) ;;
+    download) die "The custom shell task uses 1-2 swaps; use --shell-source collect" ;;
     *) die "--shell-source must be download or collect" ;;
 esac
-if [[ "$SHELL_SOURCE" == download && -n "$SHELL_CHECKPOINT" ]]; then
-    die "--shell-checkpoint requires --shell-source collect"
-fi
-if [[ "$SHELL_SOURCE" == download ]] && (( ! INTERCEPTS_ONLY && EPISODES > 250 )); then
-    die "The public shell dataset has 250 episodes; use --shell-source collect for more"
-fi
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$REPO_ROOT"
@@ -168,6 +160,9 @@ prepare_oracle() {
             # Earlier sequence experts could move during the final blank delay.
             output_dir="$output_dir/wait_for_choices_v1"
             ;;
+        shell_game_shuffle_touch)
+            output_dir="$output_dir/swaps1_2_tracking_v1"
+            ;;
     esac
     if [[ -n "$supplied" ]]; then
         [[ -f "$supplied" ]] || die "Checkpoint does not exist: $supplied"
@@ -214,16 +209,6 @@ for index in "${!ENV_IDS[@]}"; do
         *) (( ! INTERCEPTS_ONLY )) || continue ;;
     esac
     if complete_dataset "$env_id"; then continue; fi
-    if [[ "$env_id" == ShellGameShuffleTouchCustom-VLA-v0 && "$SHELL_SOURCE" == download ]]; then
-        # The pinned public release has 250 episodes; never train an oracle as
-        # a fallback for a failed download or a larger requested dataset.
-        run "${PYTHON[@]}" -m dom_vpwem.dataset_installer \
-            --task "$env_id" --output-root "$DATA_ROOT"
-        if (( ! DRY_RUN )); then
-            complete_dataset "$env_id" || die "Downloaded shell dataset is incomplete"
-        fi
-        continue
-    fi
     oracle="${ORACLE_CONFIGS[$index]}"
     if [[ -z "${CHECKPOINT_CACHE[$oracle]:-}" ]]; then
         prepare_oracle "$oracle" "${SUPPLIED[$index]}"

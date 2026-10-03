@@ -110,6 +110,10 @@ def existing_episodes(config: CollectConfig) -> list[Path]:
         if np.any(np.abs(episode.action) > 1.00001):
             raise ValueError(f"{path}: actions must be normalized to [-1, 1]")
         with np.load(path, allow_pickle=False) as data:
+            if config.env_id == SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID:
+                from .tracking_data import load_tracking_labels
+
+                load_tracking_labels(path, episode.full_length, episode.length)
             if "env_id" in data and str(data["env_id"].item()) not in allowed_ids:
                 raise ValueError(f"{path}: environment ID does not match {task.env_id}")
             if "success_once" in data and not bool(data["success_once"].item()):
@@ -258,10 +262,22 @@ def _collect_locked(config, env_factory, expert_factory):
                     raise ValueError(f"Unexpected RGB batch: {rgb.shape}, {rgb.dtype}")
                 if proprio.shape != (config.num_envs, 7) or not np.isfinite(proprio).all():
                     raise ValueError("Expected finite batched 7-D proprioception")
+                labels = {}
+                if config.env_id == SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID:
+                    labels = {key: _numpy(value) for key, value in env.tracking_labels().items()}
+                    if labels["tracking_xy"].shape != (config.num_envs, 2):
+                        raise ValueError("Expected batched target-cup XY labels")
+                    if not np.isfinite(labels["tracking_xy"]).all():
+                        raise ValueError("Nonfinite target-cup position")
+                    if labels["tracking_hidden"].shape != (config.num_envs,):
+                        raise ValueError("Expected batched tracking visibility labels")
                 # Copy BEFORE stepping: observations may refer to reusable
                 # simulator buffers. Labels must describe this observation.
                 for row in np.flatnonzero(active):
-                    buffers[row].append({"rgb": rgb[row].copy(), "proprio": proprio[row].copy()})
+                    buffers[row].append({
+                        "rgb": rgb[row].copy(), "proprio": proprio[row].copy(),
+                        **{key: value[row].copy() for key, value in labels.items()},
+                    })
                 state = {
                     key: value.to(config.device) for key, value in env.oracle_observation().items()
                 }

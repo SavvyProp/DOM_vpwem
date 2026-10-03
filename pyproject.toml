@@ -42,6 +42,7 @@ prerelease = "allow"
 
 [project.scripts]
 dom-vpwem-train = "dom_vpwem.train:main"
+dom-vpwem-train-tracking = "dom_vpwem.train_tracking:main"
 dom-vpwem-eval = "dom_vpwem.evaluate:main"
 dom-vpwem-install-datasets = "dom_vpwem.dataset_installer:main"
 dom-vpwem-install-sim-assets = "dom_vpwem.simulator_assets:main"

@@ -87,7 +87,7 @@ _TASK_SPECS = {
     ),
     SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID: TaskSpec(
         env_id=SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID,
-        dataset_slug="shell_game_shuffle_touch_custom_vla_v0",
+        dataset_slug="shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1",
         max_episode_steps=60,
         split="Short",
         memory_type="Tracking",
@@ -95,8 +95,7 @@ _TASK_SPECS = {
             "Observe which cup hides the ball, track the cups as they shuffle, "
             "then touch the correct cup."
         ),
-        public_dataset=True,
-        public_dataset_source=("ShellGameShuffleTouch-VLA-v0", "shell_game_shuffle_touch_vla_v0"),
+        public_dataset=False,
         base_env_id="ShellGameShuffleTouch-VLA-v0",
         entry_point="dom_vpwem.custom_envs.shell_game_shuffle_touch:ShellGameShuffleTouch",
     ),

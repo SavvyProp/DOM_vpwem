@@ -40,16 +40,11 @@ def test_dry_run_plans_separate_experts_for_the_different_cover_start_poses(
     plan = commands(result.stdout)
     training = [cmd for cmd in plan if "dom_vpwem.oracle_train" in cmd]
     collection = [cmd for cmd in plan if "dom_vpwem.collect_demos" in cmd]
-    expected_count = 2 if intercepts_only else 3
+    expected_count = 2 if intercepts_only else 4
     assert len(training) == expected_count
     assert len(collection) == expected_count
     downloads = [cmd for cmd in plan if "dom_vpwem.dataset_installer" in cmd]
-    assert len(downloads) == (0 if intercepts_only else 1)
-    if downloads:
-        (cmd,) = downloads
-        assert cmd[cmd.index("--task") + 1] == "ShellGameShuffleTouchCustom-VLA-v0"
-        assert cmd[cmd.index("--output-root") + 1] == str(tmp_path / "data with spaces")
-    assert all("ShellGameShuffleTouchCustom-VLA-v0" not in cmd for cmd in collection)
+    assert not downloads
     paths = [cmd[cmd.index("--checkpoint") + 1] for cmd in collection]
     assert paths[0] != paths[1]
     assert paths[1] == str(
@@ -58,6 +53,9 @@ def test_dry_run_plans_separate_experts_for_the_different_cover_start_poses(
     assert paths[0] == str(tmp_path / "oracles/intercept_fast_cover/collision_cue5_v1/best_ckpt.pt")
     if not intercepts_only:
         assert paths[2] == str(
+            tmp_path / "oracles/shell_game_shuffle_touch/swaps1_2_tracking_v1/best_ckpt.pt"
+        )
+        assert paths[3] == str(
             tmp_path / "oracles/remember_color_sequence3_long/wait_for_choices_v1/best_ckpt.pt"
         )
     # Direct PPO commands and the Bash entry point must use the same run layout.
@@ -182,15 +180,13 @@ else:
     env = {**os.environ, "PYTHON_BIN": str(runner), "PIPELINE_TEST_LOG": str(log)}
     subprocess.run(args, env=env, cwd=tmp_path, check=True, capture_output=True, text=True)
     first = [json.loads(line) for line in log.read_text().splitlines()]
-    expected_count = 2 if intercepts_only else 3
+    expected_count = 2 if intercepts_only else 4
     assert sum("dom_vpwem.oracle_train" in cmd for cmd in first) == expected_count
     assert (
         sum("dom_vpwem.collect_demos" in cmd and "--status" not in cmd for cmd in first)
         == expected_count
     )
-    assert sum("dom_vpwem.dataset_installer" in cmd for cmd in first) == (
-        0 if intercepts_only else 1
-    )
+    assert not any("dom_vpwem.dataset_installer" in cmd for cmd in first)
     assert all("--resume" not in cmd for cmd in first)  # Never resume an earlier task version.
     for path in old_files:
         assert path.read_bytes() == b"old task artifact"
@@ -220,7 +216,7 @@ def test_interrupted_ppo_run_resumes_even_when_best_checkpoint_exists(tmp_path):
     assert "--resume" in commands(result.stdout)[0]
 
 
-def test_collect_only_can_download_shell_without_a_shell_checkpoint(tmp_path):
+def test_collect_only_requires_a_shell_checkpoint(tmp_path):
     checkpoint = tmp_path / "expert.pt"
     checkpoint.write_bytes(b"expert")
     result = subprocess.run(
@@ -234,17 +230,15 @@ def test_collect_only_can_download_shell_without_a_shell_checkpoint(tmp_path):
             "--sequence-checkpoint",
             str(checkpoint),
         ],
-        check=True,
         capture_output=True,
         text=True,
     )
-    plan = commands(result.stdout)
-    assert len(plan) == 4
-    assert sum("dom_vpwem.dataset_installer" in cmd for cmd in plan) == 1
-    assert not any("dom_vpwem.oracle_train" in cmd for cmd in plan)
+    assert result.returncode == 2
+    assert "No oracle" in result.stderr
+    assert "shell_game_shuffle_touch/swaps1_2_tracking_v1" in result.stderr
 
 
-def test_shell_download_failure_never_falls_back_to_ppo(tmp_path):
+def test_mismatched_shell_download_is_rejected_before_work(tmp_path):
     runner = tmp_path / "fake python"
     log = tmp_path / "calls.jsonl"
     runner.write_text(
@@ -265,18 +259,17 @@ raise AssertionError("Must not collect or train a shell oracle after download fa
     )
     runner.chmod(0o755)
     result = subprocess.run(
-        ["bash", str(SCRIPT)],
+        ["bash", str(SCRIPT), "--shell-source", "download"],
         env={**os.environ, "PYTHON_BIN": str(runner), "PIPELINE_TEST_LOG": str(log)},
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 29
-    calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert "dom_vpwem.dataset_installer" in calls[-1]
-    assert not any("dom_vpwem.oracle_train" in cmd for cmd in calls)
+    assert result.returncode == 2
+    assert "custom shell task uses 1-2 swaps" in result.stderr
+    assert not log.exists()
 
 
-def test_larger_shell_dataset_requires_explicit_local_collection(tmp_path):
+def test_larger_shell_dataset_uses_local_collection(tmp_path):
     args = [
         "bash",
         str(SCRIPT),
@@ -286,10 +279,6 @@ def test_larger_shell_dataset_requires_explicit_local_collection(tmp_path):
         "--oracle-root",
         str(tmp_path / "oracles"),
     ]
-    rejected = subprocess.run(args, capture_output=True, text=True)
-    assert rejected.returncode == 2
-    assert "public shell dataset has 250 episodes" in rejected.stderr
-    assert not commands(rejected.stdout)  # Reject before any expensive training starts.
     subprocess.run(args + ["--intercepts-only"], check=True, capture_output=True, text=True)
     local = subprocess.run(
         args + ["--shell-source", "collect"],

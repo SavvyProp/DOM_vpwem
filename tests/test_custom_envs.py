@@ -40,18 +40,19 @@ def test_custom_metadata_and_config_need_no_simulator_imports():
         assert config.task.max_episode_steps == task.max_episode_steps
         assert config.task.dataset_dir == task.default_dataset_dir
         assert config.train.output_dir == f"outputs/{name}"
-        assert task.public_dataset is (env_id == SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID)
+        assert not task.public_dataset
 
 
-def test_public_shell_alias_matches_upstream_settings():
+def test_custom_shell_reduces_swaps_and_requires_local_data():
     pytest.importorskip("mikasa_robo_suite")
     from dom_vpwem.custom_envs.shell_game_shuffle_touch import ShellGameShuffleTouch
 
     upstream = ShellGameShuffleTouch.__bases__[0]
-    for name in ("CUE_PHASE_STEPS", "SHUFFLE_PHASE_STEPS", "NUM_SWAPS", "SWAP_ARC_HEIGHT"):
-        assert getattr(ShellGameShuffleTouch, name) == getattr(upstream, name), (
-            "Modified shell tasks must stop reusing the public dataset"
-        )
+    assert ShellGameShuffleTouch.NUM_SWAPS == [1, 2]
+    assert upstream.NUM_SWAPS == [2, 4]
+    task = get_task_spec(SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID)
+    assert not task.public_dataset and task.public_dataset_source is None
+    assert task.dataset_slug.endswith("swaps1_2_tracking_v1")
 
 
 def test_custom_registration_preserves_upstream_and_supports_wrappers():

@@ -1,6 +1,6 @@
 # Privileged-state PPO oracle for the repository-owned shuffle-and-touch task.
 env_id: ShellGameShuffleTouchCustom-VLA-v0
-output_dir: outputs/oracles/shell_game_shuffle_touch
+output_dir: outputs/oracles/shell_game_shuffle_touch/swaps1_2_tracking_v1
 seed: 123
 device: cuda
 sim_backend: gpu

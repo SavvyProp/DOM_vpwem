@@ -76,7 +76,6 @@ def test_task_resolution_and_destination_contract(tmp_path: Path) -> None:
     published = [
         get_task_spec("ShellGameShuffleColorLampTouch-VLA-v0"),
         get_task_spec("ShellGameTouch-VLA-v0"),
-        get_task_spec("ShellGameShuffleTouchCustom-VLA-v0"),
     ]
     assert resolve_tasks(None) == published
     assert resolve_tasks(["all"]) == published
@@ -87,10 +86,8 @@ def test_task_resolution_and_destination_contract(tmp_path: Path) -> None:
     touch = get_task_spec("ShellGameTouch-VLA-v0")
     assert resolve_tasks([touch.dataset_slug]) == [touch]
     assert dataset_path(tmp_path, touch) == tmp_path / "shell_game_touch_vla_v0"
-    shell = get_task_spec("ShellGameShuffleTouchCustom-VLA-v0")
-    assert resolve_tasks(
-        ["shuffle-touch", "ShellGameShuffleTouch-VLA-v0", "shell_game_shuffle_touch_vla_v0"]
-    ) == [shell]
+    with pytest.raises(DatasetInstallError, match="has no published dataset"):
+        resolve_tasks(["shuffle-touch"])
 
     with pytest.raises(DatasetInstallError, match="Unknown task"):
         resolve_tasks(["not-a-task"])
@@ -98,7 +95,7 @@ def test_task_resolution_and_destination_contract(tmp_path: Path) -> None:
         resolve_tasks(["all", "not-a-task"])
 
 
-def test_module_entry_point_used_by_bash_resolves_the_public_shell_alias(tmp_path):
+def test_module_entry_point_rejects_modified_shell_dataset(tmp_path):
     result = subprocess.run(
         [
             sys.executable,
@@ -114,8 +111,7 @@ def test_module_entry_point_used_by_bash_resolves_the_public_shell_alias(tmp_pat
         text=True,
     )
     assert result.returncode == 1
-    assert "Dataset is not installed" in result.stderr
-    assert "shell_game_shuffle_touch_custom_vla_v0" in result.stderr
+    assert "has no published dataset" in result.stderr
     assert not (tmp_path / "missing").exists()
 
 
@@ -125,6 +121,7 @@ def test_module_entry_point_used_by_bash_resolves_the_public_shell_alias(tmp_pat
         "InterceptFastCover-VLA-v0",
         "InterceptFastCover2-VLA-v0",
         "RememberColorSequence3-Long-VLA-v0",
+        "ShellGameShuffleTouchCustom-VLA-v0",
     ],
 )
 def test_custom_task_is_rejected_before_downloading_or_creating_directories(tmp_path, env_id):
@@ -138,15 +135,11 @@ def test_custom_task_is_rejected_before_downloading_or_creating_directories(tmp_
     assert not destination.exists()
 
 
-def test_unchanged_shell_alias_uses_exact_upstream_task_and_keeps_provenance(tmp_path):
-    from dom_vpwem.collect_demos import CollectConfig, existing_episodes
-
-    task = get_task_spec("ShellGameShuffleTouchCustom-VLA-v0")
-    source = replace(
-        task,
-        env_id="ShellGameShuffleTouch-VLA-v0",
-        dataset_slug="shell_game_shuffle_touch_vla_v0",
-        public_dataset_source=None,
+def test_unchanged_alias_uses_exact_upstream_task_and_keeps_provenance(tmp_path):
+    source = get_task_spec("ShellGameTouch-VLA-v0")
+    task = replace(
+        source, env_id="LocalTouchAlias-VLA-v0", dataset_slug="local_touch_alias_v0",
+        public_dataset_source=(source.env_id, source.dataset_slug),
     )
     snapshot = _snapshot(tmp_path, source)
 
@@ -162,13 +155,11 @@ def test_unchanged_shell_alias_uses_exact_upstream_task_and_keeps_provenance(tmp
         converter=_converter(7),
         print_fn=lambda _: None,
     )
-    assert target.name == "shell_game_shuffle_touch_custom_vla_v0"
+    assert target.name == "local_touch_alias_v0"
     manifest = verify_install(target, task, check_hashes=True)
     assert manifest["task"]["env_id"] == task.env_id
     assert manifest["source"]["env_id"] == source.env_id
     assert manifest["source"]["dataset_slug"] == source.dataset_slug
-    config = CollectConfig(task.env_id, data_root=str(target.parent))
-    assert len(existing_episodes(config)) == 1
     assert install_datasets(
         [task],
         output_root=target.parent,
@@ -180,8 +171,6 @@ def test_unchanged_shell_alias_uses_exact_upstream_task_and_keeps_provenance(tmp
     (target / MANIFEST_FILENAME).write_text(json.dumps(manifest))
     with pytest.raises(DatasetInstallError, match="upstream task mismatch"):
         verify_install(target, task, check_hashes=True)
-    with pytest.raises(DatasetInstallError, match="upstream task mismatch"):
-        existing_episodes(config)
 
 
 def test_install_fetches_converts_verifies_and_then_skips_without_network(

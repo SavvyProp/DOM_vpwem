@@ -2,7 +2,7 @@
 # Uses model/training defaults; collect trajectories under this custom task ID.
 task:
   env_id: ShellGameShuffleTouchCustom-VLA-v0
-  dataset_dir: data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0
+  dataset_dir: data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1
   max_episode_steps: 60
 
 train:

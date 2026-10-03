@@ -16,6 +16,7 @@ The implementation includes:
 - recursive Q-Former-style episodic memory with bounded caches;
 - adjacent-similarity or FIFO cache compression;
 - a transformer DDPM action model with VPWEM/DP-PTP action alignment;
+- a separate shuffle-touch variant with supervised cross-attention ball tracking;
 - current MIKASA 7-D `proprio` and normalized 7-D `pd_ee_delta_pose` actions;
 - episode-safe NPZ loading, training checkpoints with EMA and normalization;
 - canonical 50-episode evaluation with memory resets and `success_once`
@@ -185,8 +186,8 @@ benchmark grouping.
 is a repository-owned subclass of upstream `ShellGameShuffleTouchVLAEnv`,
 registered as **`ShellGameShuffleTouchCustom-VLA-v0`**. The `Custom` suffix
 avoids conflicting with MIKASA's existing `ShellGameShuffleTouch-VLA-v0` ID.
-It starts with the upstream short-task behavior: a 1–5-step ball cue, a
-20–35-step shuffle with 2–4 swaps, then touching the cup that hides the ball.
+It uses a 1–5-step ball cue and a 20–35-step shuffle with **1–2 swaps**, then
+touching the cup that hides the ball.
 The episode horizon is 60 steps and the metadata is Short/Tracking.
 
 Edit `CUE_PHASE_STEPS`, `SHUFFLE_PHASE_STEPS`, `NUM_SWAPS`, and
@@ -203,22 +204,59 @@ uv run --locked --extra eval python scripts/preview_env.py \
   --env-id ShellGameShuffleTouchCustom-VLA-v0 \
   --output eval_results/shell_game_shuffle_touch_preview.mp4
 
-uv run --locked --extra data dom-vpwem-install-datasets \
-  --task ShellGameShuffleTouchCustom-VLA-v0
+uv run --locked --extra eval python -m dom_vpwem.collect_demos \
+  --env-id ShellGameShuffleTouchCustom-VLA-v0 \
+  --checkpoint /path/to/shell_oracle.pt
 
-# After installing the matching public examples:
+# Baseline VPWEM, after collecting matching demonstrations:
 uv run --locked dom-vpwem-train --config configs/shell_game_shuffle_touch.yaml
 ```
 
 Its dataset directory is
-`data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0`.
-The dataset installer maps this unchanged alias to the upstream
-`ShellGameShuffleTouch-VLA-v0` release. No oracle training is needed for these
-examples. If you change the task's settings or observations, disable its
-`public_dataset` flag and use `--shell-source collect` with a new data root
-to generate matching demonstrations. Its PPO YAML remains available for that
-case. Pass `--env-id ShellGameShuffleTouchCustom-VLA-v0` to the evaluator when
-using its student checkpoint.
+`data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1`.
+The published 2–4-swap data does not match this easier variant. Local collection
+also records `tracking_xy` (`[T,2]`, metres in the table/world frame) and
+`tracking_hidden` (`[T]`, boolean), aligned with each pre-action RGB frame.
+Positions follow the cup containing the ball; the renderer's parked ball pose
+and precomputed final-slot oracle label are not tracking targets.
+The separate PPO config is `configs/oracles/shell_game_shuffle_touch.yaml`.
+An existing compatible state oracle can be supplied explicitly; new oracle
+runs use `outputs/oracles/shell_game_shuffle_touch/swaps1_2_tracking_v1/`.
+
+The tracking-supervised policy lives in
+[`tracking.py`](src/dom_vpwem/tracking.py), separately from baseline VPWEM:
+
+```bash
+uv run --locked python -m dom_vpwem.train_tracking \
+  --config configs/shell_game_shuffle_touch_tracking.yaml
+
+uv run --locked --extra eval dom-vpwem-eval \
+  --checkpoint outputs/shell_game_shuffle_touch_tracking/checkpoint_600000.pt \
+  --env-id ShellGameShuffleTouchCustom-VLA-v0 \
+  --model-name dom-vpwem-tracking
+```
+
+One learned query cross-attends to clean working and episodic tokens, then an
+MLP predicts normalized target-cup XY. Training uses diffusion loss plus
+`tracking.loss_weight * (current tracking loss + tracking.prefix_loss_weight *
+prefix tracking loss)`. Both position losses use Huber loss and configurable
+hidden-phase weighting. `tracking.xy_scale` defaults to 0.25 metres.
+Prefix labels match the causal working/memory windows at each replayed step.
+The new compressor caches updated summaries and retains temporal gradients
+for `tracking.unroll_steps` updates (default 8). Sampling uses every frame;
+FIFO cache size remains bounded. The tracking config retains full 128×128
+images without random cropping to preserve the brief cue and all cups.
+Historical image features remain detached,
+while current-frame supervision trains the shared image encoder. No privileged
+coordinates enter the policy inputs or the diffusion denoiser. The position
+head is unused during action sampling.
+
+Metrics include diffusion loss, current/prefix tracking losses, and current
+position error in metres. Checkpoints store the tracking configuration and
+load through the standard evaluator. Resume with `--resume`; initialize the
+image encoder from another run with `--vision-encoder-checkpoint`. Old unlabeled
+NPZs are rejected rather than assigned synthetic targets. The baseline model
+and baseline training CLI continue to use their original objective.
 
 [`RememberColorSequence3Long`](src/dom_vpwem/custom_envs/remember_color_sequence.py)
 subclasses `RememberColor3LongVLAEnv` as **`RememberColorSequence3-Long-VLA-v0`**.
@@ -405,7 +443,7 @@ generates training data for all four custom environments:
 # Inspect the commands without loading Python, creating environments, or training.
 bash scripts/generate_training_examples.sh --dry-run
 
-# Download the shell dataset; train missing experts and collect the other tasks.
+# Train missing experts and collect matching demonstrations for all four tasks.
 bash scripts/generate_training_examples.sh
 ```
 
@@ -417,16 +455,12 @@ bash scripts/generate_training_examples.sh --intercepts-only --dry-run
 bash scripts/generate_training_examples.sh --intercepts-only
 ```
 
-The unchanged shell task downloads the official **250-episode
-ShellGameShuffleTouch** release and converts it to the custom task's NPZ
-directory. It does not train or require a shell oracle. The pinned source is
-`shell_game_shuffle_touch_vla_v0` in the
-[MIKASA LeRobot release](https://huggingface.co/datasets/mikasa-robo/mikasa-robo-vla-lerobot),
-not the separate shuffle-color-lamp task. Download or conversion failures
-stop the command and never fall back to PPO.
+All four custom tasks require locally collected examples. The shell variant
+uses 1–2 swaps and records tracking labels, so it cannot reuse the published
+2–4-swap demonstrations.
 
-The two covers and the color-sequence task have separate default state
-experts, so at most three PPO runs are started. These use the YAMLs in
+The two covers, shell task, and color-sequence task have separate default state
+experts, so at most four PPO runs are started. These use the YAMLs in
 `configs/oracles/`, whose default budgets are
 150 million transitions per expert with success-based early stopping. Existing
 exports under `outputs/oracles/` are reused; interrupted PPO runs with a
@@ -441,29 +475,30 @@ directories and do not skip training or collection for the solid covers and cue 
 The color-sequence expert uses
 `outputs/oracles/remember_color_sequence3_long/wait_for_choices_v1/`, with the
 same `wait_for_choices_v1` suffix on its dataset to require waiting until the
-choices appear. Shell-game paths are unchanged. Once the current datasets are
+choices appear. Shell-game data and expert paths now use `swaps1_2_tracking_v1`
+to separate the easier, labeled task from older artifacts. Once the current datasets are
 complete, rerunning the command reuses them without training again.
 
 To use checkpoints you already have, supply raw MIKASA `AgentStateOnly` state
 dicts. Validate any upstream or shared InterceptFast expert on the current arm
-poses before using it. The shell dataset is downloaded automatically in this command:
+poses before using it. Supply a shell expert for the easier shuffle task:
 
 ```bash
 bash scripts/generate_training_examples.sh --collect-only \
   --intercept-checkpoint /path/to/intercept_cover.pt \
   --intercept2-checkpoint /path/to/intercept_cover2.pt \
+  --shell-checkpoint /path/to/shell.pt \
   --sequence-checkpoint /path/to/sequence.pt
 ```
 
-`--collect-only` prevents PPO training and still permits the shell download.
+`--collect-only` prevents PPO training and requires experts for all selected tasks.
 Checkpoint sidecars, when present, must
 match the task and observation/action schema. Checkpoints without sidecars
 are checked for network compatibility, and only successful rollouts are saved.
 For compatibility, supplying `--intercept-checkpoint` without
 `--intercept2-checkpoint` explicitly uses that checkpoint for both covers.
-For a modified shell task, `--shell-source collect` selects local PPO training
-and collection instead. Supplying `--shell-checkpoint` also selects local
-collection unless it conflicts with an explicit `--shell-source download`.
+The shell task uses local collection by default. `--shell-source download` is
+rejected because the published demonstrations have different shuffle settings.
 
 The default output locations match the student YAMLs:
 
@@ -471,7 +506,7 @@ The default output locations match the student YAMLs:
 | --- | --- |
 | InterceptFastCover | `intercept_fast_cover_vla_v0_collision_cue5_v1/` |
 | InterceptFastCover2 | `intercept_fast_cover2_vla_v0_collision_cue5_v1/` |
-| ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0/` |
+| ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1/` |
 | RememberColorSequence3-Long | `remember_color_sequence3_long_vla_v0_wait_for_choices_v1/` |
 
 Each locally collected successful episode is stored as a compressed `train_data_000000.npz`,
@@ -481,9 +516,7 @@ The collector retains the cue, blank gaps, and waiting period before the
 successful action. Images and privileged expert state come from the same
 simulator instance. Action labels record what reaches the controller, including
 the zero actions enforced during the shell-game cue and shuffle.
-The downloaded shell episodes use the same required RGB/proprio/action arrays
-and an installer manifest recording the original upstream task and checksums;
-their optional fields follow the public-dataset format described below.
+Shell episodes additionally contain pre-action tracking coordinates and visibility labels.
 
 Use `--episodes N` to change the total successful-episode target per task,
 `--num-envs N` to change the collection batch size (default 4), and
@@ -492,17 +525,12 @@ separate from oracle validation seeds. The default attempt limit is ten times
 the episode target, or one full batch if larger. If an expert produces too few
 successes, collection stops with an error and retains completed episodes.
 `--max-attempts N` raises this total limit, including attempts from prior runs.
-The shell download always keeps the complete 250-episode release, even when
-`--episodes` is smaller. Requesting more than 250 requires
-`--shell-source collect`; this is checked before any PPO training starts.
 
 Rerun the same command to resume: completed datasets are validated and reused,
 and partial collections continue with fresh seeds using `collection.json`.
 Keep the oracle weights, seed, batch size, and simulator backend unchanged.
-Use a new data root when changing these settings. A complete matching upstream
-ShellGameShuffleTouch NPZ dataset can also be placed in the custom shell task's
-directory for reuse. Files without task/success metadata must already be known
-to contain successful demonstrations of that task. Partial external datasets
+Use a new data root when changing these settings. External shell demonstrations
+must match the 1–2-swap task and include aligned tracking labels. Partial external datasets
 without a collection manifest cannot be extended by this command.
 
 The script requires the MIKASA GPU simulation/rendering stack and task assets.
@@ -613,7 +641,7 @@ data_mikasa_robo/data_npz/
 │   ├── train_data_000000.npz
 │   ├── ...
 │   └── .dom_vpwem_dataset.json
-└── shell_game_shuffle_touch_custom_vla_v0/
+└── shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1/
     ├── train_data_000000.npz
     ├── ...
     └── .dom_vpwem_dataset.json
@@ -692,7 +720,7 @@ Run these commands from the repository root with the project environment install
   --output eval_results/videos/remember_color_sequence3_long_dataset.mp4
 
 .venv/bin/python scripts/export_dataset_video.py \
-  --dataset-dir data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0 \
+  --dataset-dir data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1 \
   --allow-unknown-success \
   --output eval_results/videos/shell_game_shuffle_touch_dataset.mp4
 ```

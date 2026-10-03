@@ -121,8 +121,14 @@ def load_policy(
         raise ValueError(
             f"Unsupported checkpoint format {payload.get('format_version')!r}"
         )
-    config = ExperimentConfig.from_dict(payload["config"])
-    model = VPWEM(config.model)
+    if "tracking" in payload["config"]:
+        from .tracking import TrackingExperimentConfig, TrackingVPWEM
+
+        config = TrackingExperimentConfig.from_dict(payload["config"])
+        model = TrackingVPWEM(config.model, config.tracking)
+    else:
+        config = ExperimentConfig.from_dict(payload["config"])
+        model = VPWEM(config.model)
     state_dict = payload.get("ema_model") or payload.get("model")
     if state_dict is None:
         raise KeyError("Checkpoint contains neither ema_model nor model weights")
