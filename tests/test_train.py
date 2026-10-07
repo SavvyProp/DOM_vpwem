@@ -44,6 +44,9 @@ class TinyDataset:
     def __len__(self) -> int:
         return 1
 
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        return {}
+
 
 def _stats() -> NormalizationStats:
     return NormalizationStats(
@@ -204,6 +207,46 @@ def test_cli_accepts_vision_encoder_checkpoint() -> None:
     )
 
     assert args.vision_encoder_checkpoint == Path("checkpoints/vision.pt")
+
+
+@pytest.mark.parametrize("failure", ["loss", "gradient"])
+def test_nonfinite_training_stops_before_weight_update_or_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    class NonfinitePolicy(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.zeros(()))
+            self.loss_metrics: dict[str, torch.Tensor] = {}
+
+        def diffusion_loss(self) -> torch.Tensor:
+            if failure == "loss":
+                loss = self.weight * float("nan")
+                self.loss_metrics["tracking_prefix_loss"] = loss.detach()
+                return loss
+            # Finite forward value, infinite derivative at zero.
+            return self.weight.sqrt()
+
+    config = _cpu_config()
+    config.train.gradient_steps = 1
+    config.train.save_every = 1
+    config.train.num_workers = 0
+    config.train.output_dir = str(tmp_path / "output")
+    policy = NonfinitePolicy()
+    monkeypatch.setattr(
+        train_module.NormalizationStats, "from_dataset",
+        classmethod(lambda cls, *args, **kwargs: _stats()),
+    )
+    exception = FloatingPointError if failure == "loss" else RuntimeError
+    message = "training step 1.*tracking_prefix_loss" if failure == "loss" else "non-finite"
+    with pytest.raises(exception, match=message):
+        train_module.train(
+            config, dataset_factory=lambda *args, **kwargs: TinyDataset(),
+            model_factory=lambda cfg: policy, batch_preparer=lambda *args: {},
+        )
+    assert policy.weight.item() == 0
+    assert not list(Path(config.train.output_dir).glob("checkpoint_*.pt"))
+    assert not (Path(config.train.output_dir) / "metrics.jsonl").exists()
 
 
 @pytest.mark.parametrize("num_workers", [0, 2])

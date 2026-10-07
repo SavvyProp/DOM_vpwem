@@ -223,6 +223,19 @@ The separate PPO config is `configs/oracles/shell_game_shuffle_touch.yaml`.
 An existing compatible state oracle can be supplied explicitly; new oracle
 runs use `outputs/oracles/shell_game_shuffle_touch/swaps1_2_tracking_v1/`.
 
+For a complete new run, train the PPO oracle, collect 250 successful labeled
+demonstrations from its best checkpoint, and train TrackingVPWEM with:
+
+```bash
+bash scripts/train_shell_game_tracking.sh
+```
+
+[`scripts/train_shell_game_tracking.sh`](scripts/train_shell_game_tracking.sh)
+contains the three commands and stops if a stage fails. It uses the CUDA/GPU
+defaults. Adjust the PPO budget in `configs/oracles/shell_game_shuffle_touch.yaml`,
+the demo count in the script, and imitation settings in
+`configs/shell_game_shuffle_touch_tracking.yaml`.
+
 The tracking-supervised policy lives in
 [`tracking.py`](src/dom_vpwem/tracking.py), separately from baseline VPWEM:
 
@@ -231,9 +244,11 @@ uv run --locked python -m dom_vpwem.train_tracking \
   --config configs/shell_game_shuffle_touch_tracking.yaml
 
 uv run --locked --extra eval dom-vpwem-eval \
-  --checkpoint outputs/shell_game_shuffle_touch_tracking/checkpoint_600000.pt \
+  --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/checkpoint_600000.pt \
   --env-id ShellGameShuffleTouchCustom-VLA-v0 \
-  --model-name dom-vpwem-tracking
+  --action-chunk-size 1 \
+  --model-name dom-vpwem-tracking \
+  --output eval_results/shell_game_shuffle_touch_tracking_position_token.json
 ```
 
 One learned query cross-attends to clean working and episodic tokens, then an
@@ -248,8 +263,23 @@ FIFO cache size remains bounded. The tracking config retains full 128×128
 images without random cropping to preserve the brief cue and all cups.
 Historical image features remain detached,
 while current-frame supervision trains the shared image encoder. No privileged
-coordinates enter the policy inputs or the diffusion denoiser. The position
-head is unused during action sampling.
+coordinates enter the policy inputs or the diffusion denoiser.
+
+With `tracking.condition_on_position: true` (enabled in the tracking YAML),
+predicted normalized XY is projected into a ball-position token alongside the
+episodic conditioning tokens. Both diffusion and tracking losses train the
+position predictor; its output remains attached to the action-loss graph.
+At inference the predictor runs once per observation and its token is reused
+across denoising steps. The token is retained when raw memory conditions are
+dropped during training, and is masked for past action slots that precede the
+latest working frame. Recurrent memory size remains unchanged.
+
+New runs write to `outputs/shell_game_shuffle_touch_tracking_position_token/`.
+Existing labeled demonstrations and the PPO oracle can be reused; rerun only
+the imitation command above if they already exist. The action policy needs
+training with the new token. Older tracking checkpoints without the flag
+still load with their original auxiliary-only wiring, but cannot be resumed
+with position conditioning enabled because their architecture differs.
 
 Metrics include diffusion loss, current/prefix tracking losses, and current
 position error in metres. Checkpoints store the tracking configuration and

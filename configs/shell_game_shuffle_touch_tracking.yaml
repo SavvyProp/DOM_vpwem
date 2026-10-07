@@ -13,6 +13,8 @@ model:
   memory_cache_strategy: fifo
 
 tracking:
+  # Project predicted XY into an extra action-conditioning token at train/test time.
+  condition_on_position: true
   attention_heads: 4
   hidden_dim: 128
   loss_weight: 1.0
@@ -22,6 +24,6 @@ tracking:
   unroll_steps: 8
 
 train:
-  output_dir: outputs/shell_game_shuffle_touch_tracking
+  output_dir: outputs/shell_game_shuffle_touch_tracking_position_token
   batch_size: 4
   compile_model: false

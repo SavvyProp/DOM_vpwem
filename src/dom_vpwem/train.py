@@ -378,11 +378,28 @@ def train(
         )
         with autocast:
             loss = train_model.diffusion_loss(**batch)
+        if not bool(torch.isfinite(loss)):
+            components = {
+                key: float(value) for key, value in getattr(model, "loss_metrics", {}).items()
+            }
+            bad_inputs = [
+                key for key, value in batch.items()
+                if torch.is_floating_point(value) and not bool(torch.isfinite(value).all())
+            ]
+            raise FloatingPointError(
+                f"Non-finite loss at training step {step}: loss={float(loss.detach())}; "
+                f"components={components}; nonfinite_inputs={bad_inputs}. "
+                "Check the first failing component and inputs. For an FP16 run, "
+                "try train.mixed_precision=false in a fresh output directory."
+            )
         scaler.scale(loss).backward()
         if config.train.grad_clip_norm > 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.train.grad_clip_norm
+                model.parameters(), config.train.grad_clip_norm,
+                # AMP handles scaled-gradient overflow by skipping the update.
+                # Without AMP, stop before Adam or EMA weights are corrupted.
+                error_if_nonfinite=not use_amp,
             )
         scaler.step(optimizer)
         scaler.update()

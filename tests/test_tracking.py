@@ -162,6 +162,101 @@ def test_auxiliary_loss_trains_shared_features_without_action_shortcut(tmp_path)
     assert model.position_predictor.query.grad.abs().sum() > 0
 
 
+def test_ball_position_token_changes_actions_and_preserves_causal_masks():
+    torch.manual_seed(17)
+    config = model_config()
+    model = TrackingVPWEM(config, TrackingConfig(condition_on_position=True)).eval()
+    working = torch.randn(2, config.obs_steps, config.embedding_dim)
+    episodic = torch.randn(2, config.memory_queries, config.embedding_dim)
+    original = model._action_memory(working, episodic, torch.zeros(2, 2))
+    shifted = model._action_memory(working, episodic, torch.ones(2, 2))
+    assert original.shape == (2, config.memory_queries + 1, config.embedding_dim)
+    torch.testing.assert_close(original[:, :-1], episodic)
+    assert model.memory_compressor.init_state(2).last_memory.shape == episodic.shape
+
+    position_index = 1 + config.memory_queries
+    mask = model.denoiser.condition_mask
+    assert torch.isneginf(mask[:config.obs_steps - 1, position_index]).all()
+    assert (mask[config.obs_steps - 1:, position_index] == 0).all()
+    assert torch.isneginf(mask[0, position_index + 2])  # latest working frame
+    noisy = torch.randn(2, config.action_horizon, config.action_dim)
+    timestep = torch.ones(2, dtype=torch.long)
+    with torch.no_grad():
+        before = model.denoiser(noisy, timestep, working, original)
+        after = model.denoiser(noisy, timestep, working, shifted)
+    torch.testing.assert_close(before[:, :config.obs_steps - 1], after[:, :config.obs_steps - 1])
+    assert not torch.allclose(before[:, config.obs_steps - 1:], after[:, config.obs_steps - 1:])
+
+
+def test_diffusion_loss_trains_position_predictor_through_token(tmp_path):
+    write_episode(tmp_path, length=7)
+    dataset = TrackingNpzDataset(tmp_path, obs_steps=2, horizon=9, memory_steps=7)
+    batch = torch.utils.data.default_collate([dataset[6]])
+    stats = NormalizationStats((0,) * 7, (1,) * 7, (-1,) * 7, (1,) * 7)
+    model = TrackingVPWEM(
+        model_config(), TrackingConfig(condition_on_position=True, unroll_steps=3),
+    )
+    model.encoder = TinyEncoder()
+    # Isolate action-loss gradients from the auxiliary objective entirely.
+    model._position_loss = lambda prediction, *args: prediction.new_zeros(())
+    loss = model.diffusion_loss(**prepare_tracking_batch(batch, stats, torch.device("cpu")))
+    assert torch.isfinite(loss)
+    loss.backward()
+    for parameter in (
+        model.position_predictor.query,
+        model.position_predictor.mlp[-1].weight,
+        model.ball_position_embedding.weight,
+        model.memory_compressor.input_projection.weight,
+        model.encoder.projection.weight,
+    ):
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+        assert parameter.grad.abs().sum() > 0
+
+
+def test_position_token_matches_sampling_and_never_uses_ground_truth(tmp_path):
+    class CapturingDenoiser(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def forward(self, noisy, step, working, episodic):
+            self.calls.append((working.detach().clone(), episodic.detach().clone()))
+            return torch.zeros_like(noisy)
+
+    write_episode(tmp_path, length=3)
+    dataset = TrackingNpzDataset(tmp_path, obs_steps=2, horizon=9, memory_steps=0)
+    batch = torch.utils.data.default_collate([dataset[1]])
+    stats = NormalizationStats((0,) * 7, (1,) * 7, (-1,) * 7, (1,) * 7)
+    model = TrackingVPWEM(model_config(), TrackingConfig(condition_on_position=True))
+    model.encoder = TinyEncoder()
+    model.denoiser = CapturingDenoiser()
+    predictions = []
+    model.position_predictor.register_forward_hook(
+        lambda module, args, output: predictions.append(output.detach().clone())
+    )
+    prepared = prepare_tracking_batch(batch, stats, torch.device("cpu"))
+    model.diffusion_loss(**prepared)
+    working, action_memory = model.denoiser.calls[-1]
+    torch.testing.assert_close(
+        action_memory[:, -1], model.ball_position_embedding(predictions[-1]),
+    )
+    assert len(predictions) == 1
+    # Changing privileged labels affects only supervision, never conditioning.
+    model.diffusion_loss(**{**prepared, "tracking_xy": prepared["tracking_xy"] + 10})
+    torch.testing.assert_close(model.denoiser.calls[-1][1], action_memory)
+
+    model.eval()
+    model.denoiser.calls.clear()
+    predictions.clear()
+    sampled = model.sample(working, action_memory[:, :-1])
+    assert torch.isfinite(sampled).all()
+    assert len(predictions) == 1
+    assert len(model.denoiser.calls) == model.config.diffusion_steps
+    for _, sampled_memory in model.denoiser.calls:
+        torch.testing.assert_close(sampled_memory, action_memory)
+
+
 def test_logical_ball_labels_follow_cup_and_do_not_read_parked_ball():
     cups = [SimpleNamespace(pose=SimpleNamespace(p=torch.tensor([[float(i), -float(i), 0]])))
             for i in range(3)]
@@ -178,12 +273,14 @@ def test_logical_ball_labels_follow_cup_and_do_not_read_parked_ball():
     assert labels["tracking_hidden"].item()
 
 
-def test_short_training_resume_and_policy_loading(tmp_path):
+@pytest.mark.parametrize("condition_on_position", [False, True])
+def test_short_training_resume_and_policy_loading(tmp_path, condition_on_position):
     data = tmp_path / "data"
     data.mkdir()
     write_episode(data, length=3)
     config = TrackingExperimentConfig.from_yaml("configs/shell_game_shuffle_touch_tracking.yaml")
     config.model = model_config()
+    config.tracking.condition_on_position = condition_on_position
     config.task.dataset_dir = str(data)
     config.train.output_dir = str(tmp_path / "output")
     config.train.device = "cpu"
@@ -200,8 +297,16 @@ def test_short_training_resume_and_policy_loading(tmp_path):
     payload = torch.load(checkpoint, weights_only=False)
     assert payload["format_version"] == CHECKPOINT_VERSION
     assert "tracking" in payload["config"]
+    if not condition_on_position:
+        # Simulate a checkpoint produced before position conditioning existed.
+        del payload["config"]["tracking"]["condition_on_position"]
+        torch.save(payload, checkpoint)
     policy = load_policy(checkpoint, device="cpu")
     assert isinstance(policy.model, TrackingVPWEM)
+    assert policy.model.tracking_config.condition_on_position == condition_on_position
+    assert policy.model.denoiser.memory_queries == (
+        config.model.memory_queries + condition_on_position
+    )
     action = policy.act({"rgb": np.zeros((128, 128, 6), np.uint8), "proprio": np.zeros(7)})
     assert action.shape == (1, 7) and torch.isfinite(action).all()
     config.train.resume = str(checkpoint.parent / "checkpoint_1.pt")

@@ -1,11 +1,11 @@
 """VPWEM with a supervised hidden-ball readout, isolated from baseline VPWEM.
 
-The action denoiser is unchanged. Training adds a query that cross-attends to
-clean working/episodic tokens, and bounded temporal gradients for FIFO memory.
-Deployment uses the same bounded recurrent memory and the VPWEM action sampler.
+Training adds a query that cross-attends to clean working/episodic tokens,
+and bounded temporal gradients for FIFO memory. Its predicted XY can also
+condition the diffusion policy as a ball-position token at train and test time.
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Mapping
 
@@ -15,7 +15,7 @@ import yaml
 from torch import Tensor, nn
 
 from .config import ExperimentConfig, ModelConfig
-from .model import VPWEM, ContextualMemoryCompressor, ContextualMemoryState
+from .model import VPWEM, ActionDenoiser, ContextualMemoryCompressor, ContextualMemoryState
 from .tasks import SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID
 
 
@@ -28,8 +28,12 @@ class TrackingConfig:
     hidden_phase_weight: float = 2.0
     xy_scale: float = 0.25  # metres per normalized coordinate
     unroll_steps: int = 8
+    # Older checkpoints omit this flag and retain the original auxiliary-only wiring.
+    condition_on_position: bool = False
 
     def validate(self, model: ModelConfig):
+        if type(self.condition_on_position) is not bool:
+            raise ValueError("tracking.condition_on_position must be a boolean")
         for name in ("attention_heads", "hidden_dim", "unroll_steps"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"tracking.{name} must be a positive integer")
@@ -197,7 +201,32 @@ class TrackingVPWEM(VPWEM):
         compressor.load_state_dict(self.memory_compressor.state_dict())
         self.memory_compressor = compressor
         self.position_predictor = BallPositionPredictor(config, tracking)
+        if tracking.condition_on_position:
+            self.ball_position_embedding = nn.Linear(2, config.embedding_dim)
+            # The extra token belongs to action conditioning, not recurrent memory.
+            self.denoiser = ActionDenoiser(replace(
+                config, memory_queries=config.memory_queries + 1,
+            ))
+            position_index = 1 + config.memory_queries
+            # XY uses the latest working frame. Earlier/past actions must not
+            # see it, matching the denoiser's existing working-frame causal mask.
+            self.denoiser.condition_mask[:config.obs_steps - 1, position_index] = float("-inf")
         self.loss_metrics = {}
+
+    def _action_memory(self, working, episodic, predicted_xy=None):
+        if not self.tracking_config.condition_on_position:
+            return episodic
+        if predicted_xy is None:
+            predicted_xy = self.position_predictor(working, episodic)
+        token = self.ball_position_embedding(predicted_xy).unsqueeze(1)
+        return torch.cat([episodic, token], dim=1)
+
+    @torch.no_grad()
+    def sample(self, working_memory, episodic_memory, **kwargs):
+        # Compute the prediction once and reuse its token throughout denoising.
+        return super().sample(
+            working_memory, self._action_memory(working_memory, episodic_memory), **kwargs,
+        )
 
     def _position_loss(self, prediction, target, hidden, mask):
         error = F.smooth_l1_loss(
@@ -268,10 +297,16 @@ class TrackingVPWEM(VPWEM):
         noise = torch.randn_like(actions)
         alpha_bar = self.alpha_bar[step].view(-1, 1, 1)
         noisy = alpha_bar.sqrt() * actions + (1 - alpha_bar).sqrt() * noise
-        predicted_noise = self.denoiser(
-            noisy, step,
-            self._drop_condition(working, self.config.short_condition_dropout, self.training),
+        action_working = self._drop_condition(
+            working, self.config.short_condition_dropout, self.training,
+        )
+        action_memory = self._action_memory(
+            working,
             self._drop_condition(episodic, self.config.long_condition_dropout, self.training),
+            predicted_xy,
+        )
+        predicted_noise = self.denoiser(
+            noisy, step, action_working, action_memory,
         )
         squared_error = (predicted_noise - noise).square()
         weights = (torch.ones_like(actions[..., 0]) if action_mask is None else action_mask).float()
