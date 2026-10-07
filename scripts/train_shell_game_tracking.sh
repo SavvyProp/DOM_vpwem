@@ -21,6 +21,7 @@ uv run --locked --extra eval --inexact python -m dom_vpwem.collect_demos \
 
 # 3. Train TrackingVPWEM with diffusion/tracking losses and a predicted-position token.
 # Default: 600K gradient steps; edit its YAML to change training settings.
-printf '\n[3/3] Training TrackingVPWEM\n'
+printf '\n[3/3] Training TrackingVPWEM (FP32)\n'
 uv run --locked --extra eval --inexact python -m dom_vpwem.train_tracking \
-  --config configs/shell_game_shuffle_touch_tracking.yaml
+  --config configs/shell_game_shuffle_touch_tracking.yaml \
+  --fp32

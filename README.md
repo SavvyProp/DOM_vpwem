@@ -241,7 +241,8 @@ The tracking-supervised policy lives in
 
 ```bash
 uv run --locked python -m dom_vpwem.train_tracking \
-  --config configs/shell_game_shuffle_touch_tracking.yaml
+  --config configs/shell_game_shuffle_touch_tracking.yaml \
+  --fp32
 
 uv run --locked --extra eval dom-vpwem-eval \
   --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/checkpoint_600000.pt \
@@ -280,6 +281,14 @@ the imitation command above if they already exist. The action policy needs
 training with the new token. Older tracking checkpoints without the flag
 still load with their original auxiliary-only wiring, but cannot be resumed
 with position conditioning enabled because their architecture differs.
+
+Tracking training defaults to FP32 (`train.mixed_precision: false`) to avoid
+the FP16 overflow observed in these runs. Both training CLIs accept `--fp32`,
+which overrides the YAML and disables FP16 autocast and gradient scaling.
+The shell-game pipeline script passes it explicitly for imitation training.
+To continue an existing compatible run in FP32, add `--fp32` together with
+`--resume /path/to/checkpoint.pt`. Model, EMA, optimizer, and scheduler state
+are restored; a precision change starts with a fresh gradient scaler.
 
 Metrics include diffusion loss, current/prefix tracking losses, and current
 position error in metres. Checkpoints store the tracking configuration and

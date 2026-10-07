@@ -26,4 +26,6 @@ tracking:
 train:
   output_dir: outputs/shell_game_shuffle_touch_tracking_position_token
   batch_size: 4
+  # Use FP32 to avoid the FP16 overflow observed in tracking runs.
+  mixed_precision: false
   compile_model: false

@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ import pytest
 import torch
 from torch import nn
 
+import dom_vpwem.train_tracking as tracking_train_module
 from dom_vpwem.collect_demos import CollectConfig, collect
 from dom_vpwem.config import ModelConfig
 from dom_vpwem.demo_env import DemoEnv
@@ -73,6 +75,27 @@ def test_tracking_dataset_rejects_unlabeled_demonstrations(tmp_path):
     write_episode(tmp_path, labels=False)
     with pytest.raises(ValueError, match="Collect fresh"):
         TrackingNpzDataset(tmp_path)
+
+
+@pytest.mark.parametrize("fp32", [False, True])
+def test_tracking_cli_fp32_override_and_default(tmp_path, monkeypatch, fp32):
+    captured = []
+
+    def capture_train(config, **kwargs):
+        captured.append(config)
+        return tmp_path / "checkpoint.pt"
+
+    monkeypatch.setattr(tracking_train_module, "train", capture_train)
+    assert tracking_train_module.main([]) == 0
+    assert captured[-1].train.mixed_precision is False
+
+    config = TrackingExperimentConfig.from_yaml("configs/shell_game_shuffle_touch_tracking.yaml")
+    config.train.mixed_precision = True
+    config_path = tmp_path / "tracking.yaml"
+    config_path.write_text(json.dumps(config.to_dict()), encoding="utf-8")
+    args = ["--config", str(config_path)] + (["--fp32"] if fp32 else [])
+    assert tracking_train_module.main(args) == 0
+    assert captured[-1].train.mixed_precision == (not fp32)
 
 
 def test_tracking_head_trains_both_memories():

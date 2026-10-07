@@ -30,6 +30,7 @@ _RESUME_MUTABLE_TRAIN_FIELDS = {
     "keep_last_checkpoints",
     "resume",
     "vision_encoder_checkpoint",
+    "mixed_precision",
 }
 
 
@@ -237,7 +238,10 @@ def load_training_checkpoint(
     ema_model.load_state_dict(checkpoint["ema_model"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer"])
     scheduler.load_state_dict(checkpoint["scheduler"])
-    scaler.load_state_dict(checkpoint.get("scaler", {}))
+    # Precision changes preserve FP32 weights and optimizer state. Start with
+    # the new mode's scaler instead of restoring an incompatible AMP state.
+    if saved_config.train.mixed_precision == config.train.mixed_precision:
+        scaler.load_state_dict(checkpoint.get("scaler", {}))
     rng_state = checkpoint.get("rng_state")
     if not isinstance(rng_state, Mapping):
         raise ValueError("Resume checkpoint does not contain a valid RNG state")
@@ -390,7 +394,7 @@ def train(
                 f"Non-finite loss at training step {step}: loss={float(loss.detach())}; "
                 f"components={components}; nonfinite_inputs={bad_inputs}. "
                 "Check the first failing component and inputs. For an FP16 run, "
-                "try train.mixed_precision=false in a fresh output directory."
+                "try --fp32 or train.mixed_precision=false."
             )
         scaler.scale(loss).backward()
         if config.train.grad_clip_norm > 0:
@@ -461,6 +465,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument(
+        "--fp32", action="store_true",
+        help="Train in float32, disabling FP16 autocast and gradient scaling. Overrides YAML.",
+    )
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--vision-encoder-checkpoint", type=Path, default=None)
     return parser
@@ -483,6 +491,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config.train.gradient_steps = args.steps
     if args.batch_size is not None:
         config.train.batch_size = args.batch_size
+    if args.fp32:
+        config.train.mixed_precision = False
     if args.resume is not None:
         config.train.resume = str(args.resume)
     if args.vision_encoder_checkpoint is not None:

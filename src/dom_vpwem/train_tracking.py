@@ -33,6 +33,8 @@ def main(argv=None):
             setattr(config.train, field, str(value) if isinstance(value, Path) else value)
     if args.dataset_dir is not None:
         config.task.dataset_dir = str(args.dataset_dir)
+    if args.fp32:
+        config.train.mixed_precision = False
     config.validate()
     checkpoint = train(
         config, dataset_factory=TrackingNpzDataset,

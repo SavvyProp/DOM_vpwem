@@ -151,7 +151,6 @@ def test_checkpoint_round_trip_restores_process_and_data_generator_rng(tmp_path:
         ("learning_rate", 2e-4),
         ("weight_decay", 2e-5),
         ("grad_clip_norm", 2.0),
-        ("mixed_precision", True),
         ("compile_model", True),
     ],
 )
@@ -171,6 +170,40 @@ def test_resume_rejects_a_different_dataset() -> None:
 
     with pytest.raises(ValueError, match="task configuration"):
         _validate_resume_compatibility(saved, current)
+
+
+@pytest.mark.parametrize("saved_mixed_precision", [False, True])
+def test_resume_allows_precision_changes_and_resets_scaler(
+    tmp_path: Path, saved_mixed_precision: bool,
+) -> None:
+    saved = _cpu_config()
+    saved.train.mixed_precision = saved_mixed_precision
+    model, ema, optimizer, scheduler, scaler = _training_state(saved)
+    sum(parameter.square().sum() for parameter in model.parameters()).backward()
+    optimizer.step()
+    scheduler.step()
+    checkpoint = tmp_path / "precision.pt"
+    save_checkpoint(
+        checkpoint, step=1, config=saved, model=model, ema_model=ema,
+        optimizer=optimizer, scheduler=scheduler, scaler=scaler, stats=_stats(),
+        data_generator=torch.Generator().manual_seed(saved.train.seed),
+    )
+    current = copy.deepcopy(saved)
+    current.train.mixed_precision = not saved_mixed_precision
+    restored = _training_state(current)
+    restored[4].value = 99  # Represents the fresh scaler for the new precision mode.
+    step, stats = load_training_checkpoint(
+        checkpoint, config=current, model=restored[0], ema_model=restored[1],
+        optimizer=restored[2], scheduler=restored[3], scaler=restored[4],
+        device=torch.device("cpu"),
+        data_generator=torch.Generator().manual_seed(current.train.seed),
+    )
+    assert step == 1 and stats == _stats()
+    assert restored[4].value == 99
+    for original, resumed in ((model, restored[0]), (ema, restored[1])):
+        torch.testing.assert_close(original.state_dict(), resumed.state_dict())
+    torch.testing.assert_close(optimizer.state_dict(), restored[2].state_dict())
+    assert scheduler.state_dict() == restored[3].state_dict()
 
 
 @pytest.mark.parametrize("include_ema", [False, True])
@@ -207,6 +240,27 @@ def test_cli_accepts_vision_encoder_checkpoint() -> None:
     )
 
     assert args.vision_encoder_checkpoint == Path("checkpoints/vision.pt")
+
+
+@pytest.mark.parametrize("mixed_precision", [False, True])
+@pytest.mark.parametrize("fp32", [False, True])
+def test_fp32_cli_overrides_yaml_only_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mixed_precision: bool, fp32: bool,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"train:\n  mixed_precision: {str(mixed_precision).lower()}\n", encoding="utf-8",
+    )
+    captured = []
+
+    def capture_train(config):
+        captured.append(config)
+        return tmp_path / "checkpoint.pt"
+
+    monkeypatch.setattr(train_module, "train", capture_train)
+    args = ["--config", str(config_path)] + (["--fp32"] if fp32 else [])
+    assert train_module.main(args) == 0
+    assert captured[0].train.mixed_precision == (mixed_precision and not fp32)
 
 
 @pytest.mark.parametrize("failure", ["loss", "gradient"])
