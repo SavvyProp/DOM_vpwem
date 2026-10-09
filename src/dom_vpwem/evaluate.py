@@ -36,6 +36,7 @@ from .mikasa_env import (
 from .rollout_video import (
     DEFAULT_VIDEO_FPS,
     Mp4RolloutRecorder,
+    RolloutFrameBuffer,
     RolloutFrameSink,
 )
 from .tasks import get_task_spec
@@ -67,6 +68,14 @@ class EpisodeResult:
 
 
 @dataclass(frozen=True)
+class VideoResult:
+    path: str
+    episode_index: int
+    seed: int
+    success_once: bool
+
+
+@dataclass(frozen=True)
 class EvaluationResult:
     env_id: str
     start_seed: int
@@ -79,6 +88,7 @@ class EvaluationResult:
     model_config: Mapping[str, Any] | None = None
     benchmark_commit: str = "unknown"
     action_chunk_size: int = 1
+    videos: tuple[VideoResult, ...] = ()
 
     @property
     def success_rate(self) -> float:
@@ -91,7 +101,7 @@ class EvaluationResult:
     def to_dict(self) -> dict[str, Any]:
         """Return the task-level JSON shape used by MIKASA's benchmark."""
 
-        return {
+        payload = {
             "env_id": self.env_id,
             "start_seed": self.start_seed,
             "n_episodes": len(self.episodes),
@@ -114,6 +124,9 @@ class EvaluationResult:
             "wrapper_chain": "apply_mikasa_vla_wrappers(include_overlays=False)",
             "episodes": [asdict(episode) for episode in self.episodes],
         }
+        if self.videos:
+            payload["videos"] = [asdict(video) for video in self.videos]
+        return payload
 
 
 def _reset_policy(policy: MemoryPolicy, *, device: str | None, seed: int) -> None:
@@ -227,6 +240,39 @@ def _validate_declared_chunk_size(policy: MemoryPolicy, actual_size: int) -> Non
             )
 
 
+def _episode_video_path(base: Path, index: int, seed: int, success: bool) -> Path:
+    outcome = "success" if success else "failure"
+    return base.with_name(
+        f"{base.stem}_episode_{index + 1:03d}_seed_{seed}_{outcome}{base.suffix}"
+    )
+
+
+def _validate_video_options(
+    video_path: Path | None, n_episodes: int, video_episode: int, video_fps: int,
+    video_count: int, video_ensure_success: bool,
+) -> None:
+    if isinstance(video_count, bool) or not isinstance(video_count, int) or video_count < 1:
+        raise ValueError("video_count must be a positive integer")
+    if type(video_ensure_success) is not bool:
+        raise ValueError("video_ensure_success must be a boolean")
+    if video_path is None:
+        if video_count != 1 or video_ensure_success:
+            raise ValueError("--video-count and --video-ensure-success require --video-output")
+        return
+    if video_path.suffix.lower() != ".mp4":
+        raise ValueError(f"video_output must end in .mp4, got {video_path}.")
+    if video_episode < 0 or video_episode >= n_episodes:
+        raise ValueError(
+            f"video_episode must be between 0 and {n_episodes - 1}, got {video_episode}."
+        )
+    if isinstance(video_fps, bool) or not isinstance(video_fps, int) or video_fps <= 0:
+        raise ValueError(f"video_fps must be a positive integer, got {video_fps!r}.")
+    if video_count > n_episodes:
+        raise ValueError(f"video_count cannot exceed n_episodes ({n_episodes})")
+    if video_episode != 0 and (video_count > 1 or video_ensure_success):
+        raise ValueError("Use video_episode=0 with --video-count or --video-ensure-success")
+
+
 def evaluate_policy(
     policy: MemoryPolicy,
     *,
@@ -242,13 +288,18 @@ def evaluate_policy(
     video_output: str | Path | None = None,
     video_episode: int = 0,
     video_fps: int = DEFAULT_VIDEO_FPS,
+    video_count: int = 1,
+    video_ensure_success: bool = False,
 ) -> EvaluationResult:
     """Evaluate one policy using canonical MIKASA seeds and success latching.
 
     If this function constructs the adapter it closes it automatically.  A
     caller-supplied adapter remains open unless ``close_adapter=True``.
-    When ``video_output`` is set, only zero-based ``video_episode`` is recorded
-    and all requested episodes still contribute to the returned metrics.
+    By default, ``video_output`` records only zero-based ``video_episode``.
+    Multiple-video mode keeps the first ``video_count`` clips; when requested,
+    a later success replaces the last failure if none of those clips succeeded.
+    Frames come from the actual rollouts, without rerunning stochastic policies.
+    Every requested episode still contributes to the returned metrics.
     """
 
     if n_episodes <= 0:
@@ -258,15 +309,10 @@ def evaluate_policy(
     if adapter is not None and env_config is not None:
         raise ValueError("Pass either adapter or env_config, not both.")
     video_path = Path(video_output) if video_output is not None else None
-    if video_path is not None:
-        if video_path.suffix.lower() != ".mp4":
-            raise ValueError(f"video_output must end in .mp4, got {video_path}.")
-        if video_episode < 0 or video_episode >= n_episodes:
-            raise ValueError(
-                f"video_episode must be between 0 and {n_episodes - 1}, got {video_episode}."
-            )
-        if isinstance(video_fps, bool) or not isinstance(video_fps, int) or video_fps <= 0:
-            raise ValueError(f"video_fps must be a positive integer, got {video_fps!r}.")
+    _validate_video_options(
+        video_path, n_episodes, video_episode, video_fps, video_count, video_ensure_success,
+    )
+    select_videos = video_count > 1 or video_ensure_success
 
     owns_adapter = adapter is None
     if adapter is None:
@@ -274,13 +320,19 @@ def evaluate_policy(
     should_close = owns_adapter if close_adapter is None else close_adapter
 
     episodes: list[EpisodeResult] = []
+    videos: list[VideoResult] = []
+    recorded_success = False
     action_chunk_size: int | None = None
     try:
         task_spec = get_task_spec(adapter.config.env_id)
         for episode_index in range(n_episodes):
             episode_seed = start_seed + episode_index
             recorder = None
-            if video_path is not None and episode_index == video_episode:
+            frame_buffer = None
+            if video_path is not None and select_videos:
+                if len(videos) < video_count or (video_ensure_success and not recorded_success):
+                    frame_buffer = RolloutFrameBuffer()
+            elif video_path is not None and episode_index == video_episode:
                 recorder = Mp4RolloutRecorder(
                     video_path,
                     fps=video_fps,
@@ -288,7 +340,7 @@ def evaluate_policy(
                     seed=episode_seed,
                     horizon=adapter.max_episode_steps,
                 )
-            frame_sink_context = recorder if recorder is not None else nullcontext(None)
+            frame_sink_context = recorder if recorder is not None else nullcontext(frame_buffer)
             with frame_sink_context as frame_sink:
                 episode = run_episode(
                     adapter,
@@ -306,6 +358,29 @@ def evaluate_policy(
                     f"expected {action_chunk_size}, got {episode.action_chunk_size}."
                 )
             episodes.append(episode)
+            if frame_buffer is not None and (
+                len(videos) < video_count or episode.success_once
+            ):
+                assert video_path is not None
+                destination = _episode_video_path(
+                    video_path, episode_index, episode_seed, episode.success_once,
+                )
+                with Mp4RolloutRecorder(
+                    destination, fps=video_fps, episode_index=episode_index,
+                    seed=episode_seed, horizon=adapter.max_episode_steps,
+                ) as selected_recorder:
+                    frame_buffer.replay(selected_recorder)
+                # Publish the success before removing the superseded failure.
+                if len(videos) == video_count:
+                    Path(videos.pop().path).unlink(missing_ok=True)
+                videos.append(VideoResult(
+                    str(destination), episode_index, episode_seed, episode.success_once,
+                ))
+                recorded_success = recorded_success or episode.success_once
+            elif recorder is not None:
+                videos.append(VideoResult(
+                    str(video_path), episode_index, episode_seed, episode.success_once,
+                ))
     finally:
         if should_close:
             adapter.close()
@@ -322,6 +397,7 @@ def evaluate_policy(
         model_config=dict(model_config or {}),
         benchmark_commit=benchmark_commit,
         action_chunk_size=action_chunk_size or 1,
+        videos=tuple(videos),
     )
 
 
@@ -368,13 +444,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--video-output",
         type=Path,
         default=None,
-        help="Optional .mp4 path for one side-by-side rollout video.",
+        help="MP4 path for one rollout, or filename prefix when selecting several clips.",
     )
     parser.add_argument(
         "--video-episode",
         type=int,
         default=0,
         help="Zero-based episode index to record when --video-output is set (default: 0).",
+    )
+    parser.add_argument(
+        "--video-count", type=int, default=1,
+        help="Number of clips to save (default: 1; requires --video-output).",
+    )
+    parser.add_argument(
+        "--video-ensure-success", action="store_true",
+        help="Include a success if any evaluated episode succeeds; requires --video-output.",
     )
     parser.add_argument(
         "--video-fps",
@@ -388,12 +472,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    try:
+        _validate_video_options(
+            args.video_output, args.episodes, args.video_episode, args.video_fps,
+            args.video_count, args.video_ensure_success,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if (
         args.output is not None
         and args.video_output is not None
         and args.output.resolve() == args.video_output.resolve()
     ):
         parser.error("--output and --video-output must be different paths")
+    if (
+        args.output is not None and args.video_output is not None
+        and (args.video_count > 1 or args.video_ensure_success)
+        and any(
+            args.output.resolve() == _episode_video_path(
+                args.video_output, index, args.start_seed + index, success,
+            ).resolve()
+            for index in range(args.episodes) for success in (False, True)
+        )
+    ):
+        parser.error("--output and generated video files must be different paths")
     policy = _load_cli_policy(args)
     model_config: dict[str, Any] = {"checkpoint": str(Path(args.checkpoint))}
     if args.num_inference_steps is not None:
@@ -412,6 +514,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         video_output=args.video_output,
         video_episode=args.video_episode,
         video_fps=args.video_fps,
+        video_count=args.video_count,
+        video_ensure_success=args.video_ensure_success,
     )
     payload = result.to_dict()
     rendered = json.dumps(payload, indent=2, sort_keys=True)
@@ -419,8 +523,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
-    if args.video_output is not None:
-        print(f"Saved rollout video: {args.video_output}", file=sys.stderr)
+    for video in result.videos:
+        print(f"Saved rollout video: {video.path}", file=sys.stderr)
+    if args.video_ensure_success and not any(episode.success_once for episode in result.episodes):
+        print(
+            f"No successful rollout occurred in the {len(result.episodes)} evaluated episodes; "
+            "saved videos show failed attempts.", file=sys.stderr,
+        )
     return 0
 
 
@@ -431,6 +540,7 @@ if __name__ == "__main__":  # pragma: no cover - exercised through the CLI
 __all__ = [
     "EpisodeResult",
     "EvaluationResult",
+    "VideoResult",
     "MemoryPolicy",
     "NUM_EPISODES",
     "START_SEED",

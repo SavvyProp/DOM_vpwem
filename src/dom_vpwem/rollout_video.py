@@ -42,6 +42,25 @@ class RolloutFrameSink(Protocol):
     ) -> None: ...
 
 
+class RolloutFrameBuffer:
+    """Keep one episode's RGB frames so its outcome can determine selection."""
+
+    def __init__(self) -> None:
+        self.frames: list[tuple[np.ndarray, int, bool | None]] = []
+
+    def write_frame(
+        self, observation: Mapping[str, np.ndarray], *, step: int, success: bool | None,
+    ) -> None:
+        if "rgb" not in observation:
+            raise MikasaContractError("Rollout observation is missing the 'rgb' key.")
+        # Simulator observations may reuse storage; preserve the actual frames.
+        self.frames.append((np.array(observation["rgb"], copy=True), step, success))
+
+    def replay(self, sink: RolloutFrameSink) -> None:
+        for rgb, step, success in self.frames:
+            sink.write_frame({"rgb": rgb}, step=step, success=success)
+
+
 def compose_policy_views(rgb: Any) -> np.ndarray:
     """Return the top/base and wrist policy views side by side as RGB."""
 
@@ -299,6 +318,7 @@ class Mp4RolloutRecorder:
 __all__ = [
     "DEFAULT_VIDEO_FPS",
     "Mp4RolloutRecorder",
+    "RolloutFrameBuffer",
     "RolloutFrameSink",
     "RolloutVideoDependencyError",
     "RolloutVideoError",

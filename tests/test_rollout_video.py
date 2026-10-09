@@ -10,6 +10,7 @@ from dom_vpwem import rollout_video
 from dom_vpwem.mikasa_env import MikasaContractError
 from dom_vpwem.rollout_video import (
     Mp4RolloutRecorder,
+    RolloutFrameBuffer,
     RolloutVideoError,
     compose_policy_views,
 )
@@ -71,6 +72,27 @@ def test_compose_policy_views_places_top_then_wrist() -> None:
 
     with pytest.raises(MikasaContractError, match="uint8"):
         compose_policy_views(_rgb().astype(np.float32))
+
+
+def test_frame_buffer_preserves_rgb_when_observation_storage_is_reused() -> None:
+    class Sink:
+        def __init__(self):
+            self.frames = []
+
+        def write_frame(self, observation, *, step, success):
+            self.frames.append((observation["rgb"].copy(), step, success))
+
+    rgb = _rgb()
+    buffer = RolloutFrameBuffer()
+    buffer.write_frame({"rgb": rgb}, step=0, success=False)
+    rgb.fill(255)
+    buffer.write_frame({"rgb": rgb}, step=1, success=True)
+    rgb.fill(0)
+    sink = Sink()
+    buffer.replay(sink)
+    np.testing.assert_array_equal(sink.frames[0][0], _rgb())
+    np.testing.assert_array_equal(sink.frames[1][0], np.full_like(rgb, 255))
+    assert [(step, success) for _, step, success in sink.frames] == [(0, False), (1, True)]
 
 
 def test_recorder_encodes_annotated_rgb_and_atomically_replaces_output(

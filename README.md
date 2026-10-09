@@ -929,6 +929,36 @@ computed over every requested episode. Use `--video-fps` to change playback
 speed without changing the rollout itself. Video status is printed to stderr,
 so stdout remains valid result JSON.
 
+To save five clips and include a success if any of the 50 evaluated episodes
+succeeds, use:
+
+```bash
+uv run --locked --extra eval python -m dom_vpwem.evaluate \
+  --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/checkpoint_600000.pt \
+  --env-id ShellGameShuffleTouchCustom-VLA-v0 \
+  --episodes 50 \
+  --action-chunk-size 1 \
+  --video-output eval_results/videos/shell_game_tracking.mp4 \
+  --video-count 5 \
+  --video-ensure-success \
+  --output eval_results/shell_game_tracking.json
+```
+
+The first five clips are kept initially. If they all fail and a later episode
+succeeds, its clip replaces the last failure. Selection uses frames captured
+during the actual evaluation; episodes are never rerun to make videos. Only
+one episode's RGB frames are buffered at a time. Evaluation always finishes
+the requested number of episodes, and success rate includes all of them.
+If no episode succeeds, the evaluator keeps the failure clips and reports
+that no success was found; it cannot guarantee success beyond that episode
+budget. `--video-count` must not exceed `--episodes`.
+
+For this mode, `--video-output` supplies a filename prefix. Generated filenames
+include the episode number, seed, and `success` or `failure`. The result JSON
+lists the selected clips under `videos`, including each path, zero-based
+episode index, seed, and outcome. Use `--video-episode` for fixed single-episode
+recording; it cannot select a nonzero starting episode in this selection mode.
+
 ## Important shuffle-color data caveat
 
 In MIKASA-Robo-VLA 1.0 source, the standard task's curriculum wrapper executes

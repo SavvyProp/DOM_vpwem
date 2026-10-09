@@ -15,6 +15,7 @@ from dom_vpwem import mikasa_env as mikasa_env_module
 from dom_vpwem.evaluate import (
     EpisodeResult,
     EvaluationResult,
+    VideoResult,
     _action_chunk,
     evaluate_policy,
     run_episode,
@@ -87,6 +88,48 @@ class ChunkPolicy:
         self.observation_shapes.append((observation["rgb"].shape, observation["proprio"].shape))
         assert set(observation) == {"rgb", "proprio"}
         return np.full((2, 7), self.act_calls / 10.0, dtype=np.float32)
+
+
+class SeedOutcomeEnv(FakeEnv):
+    def __init__(self, success_seeds, *, horizon=3):
+        super().__init__(horizon=horizon)
+        self.success_seeds = set(success_seeds)
+
+    def reset(self, **kwargs):
+        observation, info = super().reset(**kwargs)
+        observation["rgb"].fill(self.seeds[-1])
+        return observation, info
+
+    def step(self, action):
+        observation, reward, terminated, truncated, info = super().step(action)
+        observation["rgb"].fill(self.seeds[-1] + self._step)
+        info["success"] = np.array([self.seeds[-1] in self.success_seeds and self._step == 2])
+        return observation, reward, terminated, truncated, info
+
+
+def _patch_evaluation_recorder(monkeypatch):
+    created = []
+
+    class Recorder:
+        def __init__(self, output, **kwargs):
+            self.output = Path(output)
+            self.kwargs = kwargs
+            self.frames = []
+            created.append(self)
+
+        def __enter__(self):
+            return self
+
+        def write_frame(self, observation, *, step, success):
+            self.frames.append((step, int(observation["rgb"][0, 0, 0]), success))
+
+        def __exit__(self, exc_type, exc, traceback):
+            if exc_type is None:
+                self.output.parent.mkdir(parents=True, exist_ok=True)
+                self.output.write_bytes(b"fake-video")
+
+    monkeypatch.setattr(evaluate_module, "Mp4RolloutRecorder", Recorder)
+    return created
 
 
 def test_canonicalize_observation_unbatches_and_drops_privileged_keys():
@@ -287,6 +330,76 @@ def test_evaluate_policy_records_only_the_selected_episode(monkeypatch, tmp_path
     assert created[0].frames == [(0, 0, False), (1, 1, False), (2, 2, True)]
 
 
+@pytest.mark.parametrize(
+    ("success_seeds", "count", "ensure_success", "expected_indices"),
+    [
+        ([], 3, True, [0, 1, 2]),
+        ([104], 3, True, [0, 1, 4]),
+        ([100], 3, True, [0, 1, 2]),
+        ([104], 3, False, [0, 1, 2]),
+        ([103], 1, True, [3]),
+        ([102, 104], 3, True, [0, 1, 2]),
+    ],
+)
+def test_multiple_videos_include_actual_success_without_replays_or_biased_metrics(
+    monkeypatch, tmp_path, success_seeds, count, ensure_success, expected_indices,
+):
+    created = _patch_evaluation_recorder(monkeypatch)
+    fake = SeedOutcomeEnv(success_seeds)
+    policy = ChunkPolicy()
+    result = evaluate_policy(
+        policy, adapter=MikasaEnvAdapter(env=fake), n_episodes=5, start_seed=100,
+        video_output=tmp_path / "rollout.mp4", video_count=count,
+        video_ensure_success=ensure_success,
+    )
+    assert fake.seeds == [100, 101, 102, 103, 104]
+    assert len(policy.reset_calls) == 5
+    assert len(result.episodes) == 5
+    assert result.success_rate == len(success_seeds) / 5
+    assert [video.episode_index for video in result.videos] == expected_indices
+    assert len(result.videos) == count
+    assert set(tmp_path.glob("*.mp4")) == {Path(video.path) for video in result.videos}
+    # Only the initial clips and a needed replacement are encoded.
+    assert len(created) == count + (expected_indices[-1] >= count)
+    assert len(result.to_dict()["videos"]) == count
+    for video in result.videos:
+        assert video.seed == 100 + video.episode_index
+        assert video.success_once == (video.seed in success_seeds)
+        outcome = "success" if video.success_once else "failure"
+        assert Path(video.path).name.endswith(f"seed_{video.seed}_{outcome}.mp4")
+        recording = next(record for record in created if str(record.output) == video.path)
+        assert recording.frames == [
+            (0, video.seed, False), (1, video.seed + 1, False),
+            (2, video.seed + 2, video.success_once), (3, video.seed + 3, video.success_once),
+        ]
+
+
+@pytest.mark.parametrize("success_seeds", [[], [104]])
+def test_cli_multi_video_selection_and_no_success_report(
+    monkeypatch, tmp_path, capsys, success_seeds,
+):
+    _patch_evaluation_recorder(monkeypatch)
+    fake = SeedOutcomeEnv(success_seeds)
+    adapter = MikasaEnvAdapter(env=fake)
+    monkeypatch.setattr(evaluate_module, "_load_cli_policy", lambda args: ChunkPolicy())
+    monkeypatch.setattr(evaluate_module, "MikasaEnvAdapter", lambda config: adapter)
+    output = tmp_path / "result.json"
+    assert evaluate_module.main([
+        "--checkpoint", str(tmp_path / "policy.pt"), "--start-seed", "100",
+        "--episodes", "5", "--video-output", str(tmp_path / "rollout.mp4"),
+        "--video-count", "3", "--video-ensure-success", "--output", str(output),
+    ]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(output.read_text())
+    assert json.loads(captured.out) == payload
+    assert payload["n_episodes"] == 5
+    assert payload["sr"] == len(success_seeds) / 5
+    assert len(payload["videos"]) == 3
+    assert sum(video["success_once"] for video in payload["videos"]) == len(success_seeds)
+    assert captured.err.count("Saved rollout video:") == 3
+    assert ("No successful rollout occurred" in captured.err) == (not success_seeds)
+
+
 def test_evaluate_policy_does_not_load_video_dependencies_without_output(
     monkeypatch,
 ):
@@ -311,15 +424,24 @@ def test_evaluate_policy_does_not_load_video_dependencies_without_output(
         ({"video_output": "rollout.mov"}, "end in .mp4"),
         ({"video_output": "rollout.mp4", "video_episode": 2}, "between 0 and 0"),
         ({"video_output": "rollout.mp4", "video_fps": 0}, "positive integer"),
+        ({"video_output": "rollout.mp4", "video_count": 0}, "positive integer"),
+        ({"video_output": "rollout.mp4", "video_count": True}, "positive integer"),
+        ({"video_output": "rollout.mp4", "video_count": 2}, "cannot exceed"),
+        ({"video_count": 2}, "require --video-output"),
+        ({"video_ensure_success": True}, "require --video-output"),
+        ({"video_output": "rollout.mp4", "video_count": 2, "video_episode": 1,
+          "n_episodes": 3}, "Use video_episode=0"),
     ],
 )
 def test_evaluate_policy_validates_video_options_before_rollout(kwargs, message):
     fake = FakeEnv(horizon=1)
+    kwargs = dict(kwargs)
+    n_episodes = kwargs.pop("n_episodes", 1)
     with pytest.raises(ValueError, match=message):
         evaluate_policy(
             ChunkPolicy(),
             adapter=MikasaEnvAdapter(env=fake),
-            n_episodes=1,
+            n_episodes=n_episodes,
             **kwargs,
         )
     assert fake.seeds == []
@@ -454,6 +576,7 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
             model_config=kwargs["model_config"],
             benchmark_commit=kwargs["benchmark_commit"],
             action_chunk_size=3,
+            videos=(VideoResult(str(kwargs["video_output"]), 0, 123, True),),
         )
 
     monkeypatch.setattr(evaluate_module, "_load_cli_policy", fake_load)
@@ -500,6 +623,8 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
     assert evaluate_kwargs["video_output"] == video_output
     assert evaluate_kwargs["video_episode"] == 0
     assert evaluate_kwargs["video_fps"] == 12
+    assert evaluate_kwargs["video_count"] == 1
+    assert evaluate_kwargs["video_ensure_success"] is False
     assert evaluate_kwargs["model_config"] == {
         "checkpoint": str(checkpoint),
         "num_inference_steps": 7,
@@ -518,13 +643,20 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
     assert f"Saved rollout video: {video_output}" in captured_output.err
 
 
-def test_cli_rejects_using_the_same_json_and_video_path(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("generated_path", [False, True])
+def test_cli_rejects_using_the_same_json_and_video_path(
+    monkeypatch, tmp_path, capsys, generated_path,
+):
     monkeypatch.setattr(
         evaluate_module,
         "_load_cli_policy",
         lambda args: pytest.fail("policy should not be loaded"),
     )
-    output = tmp_path / "same.mp4"
+    video_output = tmp_path / "same.mp4"
+    output = (
+        tmp_path / "same_episode_001_seed_4242424242_failure.mp4"
+        if generated_path else video_output
+    )
 
     with pytest.raises(SystemExit) as error:
         evaluate_module.main(
@@ -534,8 +666,8 @@ def test_cli_rejects_using_the_same_json_and_video_path(monkeypatch, tmp_path, c
                 "--output",
                 str(output),
                 "--video-output",
-                str(output),
-            ]
+                str(video_output),
+            ] + (["--video-count", "2"] if generated_path else [])
         )
 
     assert error.value.code == 2
