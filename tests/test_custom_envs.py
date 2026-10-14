@@ -39,20 +39,28 @@ def test_custom_metadata_and_config_need_no_simulator_imports():
         assert config.task.env_id == env_id
         assert config.task.max_episode_steps == task.max_episode_steps
         assert config.task.dataset_dir == task.default_dataset_dir
-        assert config.train.output_dir == f"outputs/{name}"
+        expected_output = f"outputs/{name}"
+        if env_id == SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID:
+            expected_output += "/swaps1_4_horizon120_tracking_v2"
+        assert config.train.output_dir == expected_output
         assert not task.public_dataset
 
 
-def test_custom_shell_reduces_swaps_and_requires_local_data():
+def test_custom_shell_has_more_swaps_and_guarantees_reaching_budget():
     pytest.importorskip("mikasa_robo_suite")
     from dom_vpwem.custom_envs.shell_game_shuffle_touch import ShellGameShuffleTouch
 
     upstream = ShellGameShuffleTouch.__bases__[0]
-    assert ShellGameShuffleTouch.NUM_SWAPS == [1, 2]
+    assert ShellGameShuffleTouch.NUM_SWAPS == [1, 4]
     assert upstream.NUM_SWAPS == [2, 4]
     task = get_task_spec(SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID)
     assert not task.public_dataset and task.public_dataset_source is None
-    assert task.dataset_slug.endswith("swaps1_2_tracking_v1")
+    assert task.dataset_slug.endswith("swaps1_4_horizon120_tracking_v2")
+    assert task.max_episode_steps == 120
+    assert (
+        task.max_episode_steps - ShellGameShuffleTouch.CUE_PHASE_STEPS[1]
+        - ShellGameShuffleTouch.SHUFFLE_PHASE_STEPS[1]
+    ) == 80
 
 
 def test_custom_registration_preserves_upstream_and_supports_wrappers():

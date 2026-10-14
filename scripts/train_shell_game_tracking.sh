@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Train the 1–2-shuffle shell-game oracle, collect demos, then train TrackingVPWEM.
+# Train the 1–4-swap, 120-step shell-game oracle, collect demos, then TrackingVPWEM.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,7 +14,7 @@ uv run --locked --extra eval --inexact python -m dom_vpwem.oracle_train \
 printf '\n[2/3] Collecting tracking-labeled demonstrations\n'
 uv run --locked --extra eval --inexact python -m dom_vpwem.collect_demos \
   --env-id ShellGameShuffleTouchCustom-VLA-v0 \
-  --checkpoint outputs/oracles/shell_game_shuffle_touch/swaps1_2_tracking_v1/best_ckpt.pt \
+  --checkpoint outputs/oracles/shell_game_shuffle_touch/swaps1_4_horizon120_tracking_v2/best_ckpt.pt \
   --data-root data_mikasa_robo/data_npz \
   --episodes 250 \
   --num-envs 4

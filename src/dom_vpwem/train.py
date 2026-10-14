@@ -232,7 +232,7 @@ def load_training_checkpoint(
         raise ValueError(
             f"Unsupported checkpoint format {checkpoint.get('format_version')!r}"
         )
-    saved_config = type(config).from_dict(checkpoint["config"])
+    saved_config = type(config).from_dict(checkpoint["config"], validate_task_horizon=False)
     _validate_resume_compatibility(saved_config, config)
     model.load_state_dict(checkpoint["model"], strict=True)
     ema_model.load_state_dict(checkpoint["ema_model"], strict=True)

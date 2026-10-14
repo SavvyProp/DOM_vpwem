@@ -93,6 +93,11 @@ class MikasaEnvConfig:
                 "Put canonical environment options on MikasaEnvConfig, "
                 f"not make_kwargs: {names}."
             )
+        horizon = self.make_kwargs.get("max_episode_steps")
+        if horizon is not None and (
+            isinstance(horizon, bool) or not isinstance(horizon, int) or horizon <= 0
+        ):
+            raise ValueError("max_episode_steps must be a positive integer")
 
     def gym_make_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -321,6 +326,11 @@ class MikasaEnvAdapter:
 
     @property
     def max_episode_steps(self) -> int:
+        override = self.config.make_kwargs.get("max_episode_steps")
+        if override is not None:
+            # ManiSkill's custom time-limit wrapper can retain the registered
+            # spec's horizon even when gym.make overrides its actual limit.
+            return override
         value = getattr(self.env, "max_episode_steps", None)
         if value is None:
             spec = getattr(self.env, "spec", None)

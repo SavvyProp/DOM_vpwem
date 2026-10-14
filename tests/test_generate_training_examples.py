@@ -53,7 +53,8 @@ def test_dry_run_plans_separate_experts_for_the_different_cover_start_poses(
     assert paths[0] == str(tmp_path / "oracles/intercept_fast_cover/collision_cue5_v1/best_ckpt.pt")
     if not intercepts_only:
         assert paths[2] == str(
-            tmp_path / "oracles/shell_game_shuffle_touch/swaps1_2_tracking_v1/best_ckpt.pt"
+            tmp_path / "oracles/shell_game_shuffle_touch"
+            / "swaps1_4_horizon120_tracking_v2/best_ckpt.pt"
         )
         assert paths[3] == str(
             tmp_path / "oracles/remember_color_sequence3_long/wait_for_choices_v1/best_ckpt.pt"
@@ -165,14 +166,19 @@ else:
     for name, revisions in (
         ("intercept_fast_cover", ("", "fixed_start_v1")),
         ("intercept_fast_cover2", ("", "fixed_start_v1")),
+        ("shell_game_shuffle_touch", ("swaps1_2_tracking_v1",)),
         ("remember_color_sequence3_long", ("",)),
     ):
         for revision in revisions:
             for filename in ("final_success_ckpt.pt", "training_state.pt"):
                 old_files.append(tmp_path / "oracle outputs" / name / revision / filename)
             suffix = f"_{revision}" if revision else ""
+            dataset_name = (
+                "shell_game_shuffle_touch_custom_vla_v0"
+                if name == "shell_game_shuffle_touch" else f"{name}_vla_v0"
+            )
             old_files.append(
-                tmp_path / "demo outputs" / f"{name}_vla_v0{suffix}" / ".test_complete"
+                tmp_path / "demo outputs" / f"{dataset_name}{suffix}" / ".test_complete"
             )
     for path in old_files:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,7 +241,7 @@ def test_collect_only_requires_a_shell_checkpoint(tmp_path):
     )
     assert result.returncode == 2
     assert "No oracle" in result.stderr
-    assert "shell_game_shuffle_touch/swaps1_2_tracking_v1" in result.stderr
+    assert "shell_game_shuffle_touch/swaps1_4_horizon120_tracking_v2" in result.stderr
 
 
 def test_mismatched_shell_download_is_rejected_before_work(tmp_path):
@@ -265,7 +271,7 @@ raise AssertionError("Must not collect or train a shell oracle after download fa
         text=True,
     )
     assert result.returncode == 2
-    assert "custom shell task uses 1-2 swaps" in result.stderr
+    assert "custom shell task uses 1-4 swaps" in result.stderr
     assert not log.exists()
 
 

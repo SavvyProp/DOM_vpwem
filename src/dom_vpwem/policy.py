@@ -124,10 +124,12 @@ def load_policy(
     if "tracking" in payload["config"]:
         from .tracking import TrackingExperimentConfig, TrackingVPWEM
 
-        config = TrackingExperimentConfig.from_dict(payload["config"])
+        config = TrackingExperimentConfig.from_dict(
+            payload["config"], validate_task_horizon=False,
+        )
         model = TrackingVPWEM(config.model, config.tracking)
     else:
-        config = ExperimentConfig.from_dict(payload["config"])
+        config = ExperimentConfig.from_dict(payload["config"], validate_task_horizon=False)
         model = VPWEM(config.model)
     state_dict = payload.get("ema_model") or payload.get("model")
     if state_dict is None:

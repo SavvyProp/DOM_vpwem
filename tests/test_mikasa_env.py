@@ -277,6 +277,7 @@ def test_run_episode_records_reset_and_every_post_step_observation():
     )
 
     assert episode.n_steps == 4
+    assert episode.first_success_step == 2
     assert sink.frames == [
         (0, 0, False),
         (1, 1, False),
@@ -284,6 +285,49 @@ def test_run_episode_records_reset_and_every_post_step_observation():
         (3, 3, True),
         (4, 4, True),
     ]
+
+
+@pytest.mark.parametrize("horizon", [60, 90])
+def test_horizon_override_and_diagnostics_identify_late_success(horizon):
+    class DelayedSuccessEnv(FakeEnv):
+        def __init__(self):
+            # The reported registration remains 60 despite the active override.
+            super().__init__(horizon=60)
+            self.cue_steps_per_env = np.array([5])
+            self.shuffle_steps_per_env = np.array([35])
+            self.num_swaps_per_env = np.array([2])
+
+        def step(self, action):
+            self._step += 1
+            reached = self._step >= 75
+            return _observation(self._step), 0., False, self._step >= horizon, {
+                "success": self._step == 75,
+                "obj_to_goal_pos": np.array([[0.05 if reached else 0.2, 0, 0]]),
+                "is_robot_static": np.array([reached]),
+            }
+
+    config = MikasaEnvConfig(make_kwargs={"max_episode_steps": horizon})
+    assert config.gym_make_kwargs()["max_episode_steps"] == horizon
+    result = evaluate_policy(
+        ChunkPolicy(), adapter=MikasaEnvAdapter(config, env=DelayedSuccessEnv()), n_episodes=1,
+    )
+    episode = result.episodes[0]
+    assert episode.n_steps == horizon
+    assert episode.success_once == (horizon == 90)
+    assert episode.first_success_step == (75 if horizon == 90 else None)
+    assert result.to_dict()["max_episode_steps"] == horizon
+    assert episode.phase_timing == {
+        "cue_steps": 5, "shuffle_steps": 35, "num_swaps": 2,
+        "manipulation_start_step": 40, "action_steps_available": horizon - 40,
+    }
+    assert episode.final_goal_distance_m == pytest.approx(0.05 if horizon == 90 else 0.2)
+    assert episode.final_robot_static == (horizon == 90)
+
+
+@pytest.mark.parametrize("horizon", [0, -1, True])
+def test_env_config_rejects_invalid_horizon_override(horizon):
+    with pytest.raises(ValueError, match="max_episode_steps must be a positive integer"):
+        MikasaEnvConfig(make_kwargs={"max_episode_steps": horizon})
 
 
 def test_evaluate_policy_records_only_the_selected_episode(monkeypatch, tmp_path):
@@ -557,7 +601,8 @@ def test_evaluate_policy_validates_declared_chunk_size():
         )
 
 
-def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("horizon", [None, 90])
+def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys, horizon):
     loaded = object()
     captured: dict[str, object] = {}
 
@@ -608,7 +653,7 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
                 "12",
                 "--output",
                 str(output),
-            ]
+            ] + (["--max-episode-steps", str(horizon)] if horizon is not None else [])
         )
         == 0
     )
@@ -625,11 +670,17 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
     assert evaluate_kwargs["video_fps"] == 12
     assert evaluate_kwargs["video_count"] == 1
     assert evaluate_kwargs["video_ensure_success"] is False
-    assert evaluate_kwargs["model_config"] == {
+    expected_model_config = {
         "checkpoint": str(checkpoint),
         "num_inference_steps": 7,
         "requested_action_chunk_size": 3,
     }
+    if horizon is not None:
+        expected_model_config["requested_max_episode_steps"] = horizon
+        assert evaluate_kwargs["env_config"].gym_make_kwargs()["max_episode_steps"] == horizon
+    else:
+        assert "max_episode_steps" not in evaluate_kwargs["env_config"].gym_make_kwargs()
+    assert evaluate_kwargs["model_config"] == expected_model_config
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["model"] == {
@@ -641,6 +692,17 @@ def test_cli_plumbs_model_and_benchmark_metadata(monkeypatch, tmp_path, capsys):
     captured_output = capsys.readouterr()
     assert json.loads(captured_output.out) == payload
     assert f"Saved rollout video: {video_output}" in captured_output.err
+
+
+@pytest.mark.parametrize("horizon", [0, -1])
+def test_cli_rejects_invalid_horizon_before_loading_policy(monkeypatch, horizon):
+    monkeypatch.setattr(
+        evaluate_module, "_load_cli_policy",
+        lambda args: pytest.fail("invalid horizon must be rejected before loading"),
+    )
+    with pytest.raises(SystemExit) as error:
+        evaluate_module.main(["--checkpoint", "policy.pt", "--max-episode-steps", str(horizon)])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("generated_path", [False, True])

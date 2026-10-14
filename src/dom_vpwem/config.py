@@ -122,10 +122,12 @@ class ExperimentConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
 
-    def validate(self) -> None:
+    def validate(self, *, validate_task_horizon: bool = True) -> None:
         self.model.validate()
         task_spec = get_task_spec(self.task.env_id)
-        if self.task.max_episode_steps != task_spec.max_episode_steps:
+        if type(self.task.max_episode_steps) is not int or self.task.max_episode_steps < 1:
+            raise ValueError("task.max_episode_steps must be a positive integer")
+        if validate_task_horizon and self.task.max_episode_steps != task_spec.max_episode_steps:
             raise ValueError(
                 f"{self.task.env_id} has a {task_spec.max_episode_steps}-step "
                 f"horizon, got {self.task.max_episode_steps}."
@@ -161,7 +163,9 @@ class ExperimentConfig:
         return cls.from_dict(raw)
 
     @classmethod
-    def from_dict(cls, raw: Mapping[str, Any]) -> "ExperimentConfig":
+    def from_dict(
+        cls, raw: Mapping[str, Any], *, validate_task_horizon: bool = True,
+    ) -> "ExperimentConfig":
         if not isinstance(raw, Mapping):
             raise TypeError("Experiment configuration must be a mapping")
         _reject_unknown(raw, {"task", "model", "train"}, "root")
@@ -170,7 +174,7 @@ class ExperimentConfig:
             model=_dataclass_from_mapping(ModelConfig, raw.get("model", {})),
             train=_dataclass_from_mapping(TrainConfig, raw.get("train", {})),
         )
-        config.validate()
+        config.validate(validate_task_horizon=validate_task_horizon)
         return config
 
 

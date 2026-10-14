@@ -35,7 +35,7 @@ simulator and dataset contract come from
 | --- | --- | ---: | --- |
 | `ShellGameShuffleColorLampTouch-VLA-v0` | [`shell_game_shuffle_color_lamp_touch.yaml`](configs/shell_game_shuffle_color_lamp_touch.yaml) | 60 | Cups shuffle; the policy must track them and use the observed lamp/color cue. This remains the default. |
 | `ShellGameTouch-VLA-v0` | [`shell_game_touch.yaml`](configs/shell_game_touch.yaml) | 30 | Cups remain stationary after covering the ball; there is no cup-shuffle phase. |
-| `ShellGameShuffleTouchCustom-VLA-v0` (local variant) | [`shell_game_shuffle_touch.yaml`](configs/shell_game_shuffle_touch.yaml) | 60 | Track the cup hiding the ball through a shuffle, then touch it. Editable subclass of MIKASA's short shuffle-and-touch task. |
+| `ShellGameShuffleTouchCustom-VLA-v0` (local variant) | [`shell_game_shuffle_touch.yaml`](configs/shell_game_shuffle_touch.yaml) | 120 | Track the cup hiding the ball through 1–4 swaps, then touch it with a generous reaching window. |
 | `RememberColorSequence3-Long-VLA-v0` (local variant) | [`remember_color_sequence3_long.yaml`](configs/remember_color_sequence3_long.yaml) | 600 | Observe a random-length color sequence with blank gaps, then select the second-to-last color from three choices. |
 | `InterceptFastCover-VLA-v0` (local variant) | [`intercept_fast_cover.yaml`](configs/intercept_fast_cover.yaml) | 60 | InterceptFast with a solid opaque cover and a five-step robot cue pause. Requires locally collected training data. |
 | `InterceptFastCover2-VLA-v0` (local variant) | [`intercept_fast_cover2.yaml`](configs/intercept_fast_cover2.yaml) | 60 | Two solid opaque sections separated by an opening, with a five-step robot cue pause. Requires locally collected training data. |
@@ -186,9 +186,16 @@ benchmark grouping.
 is a repository-owned subclass of upstream `ShellGameShuffleTouchVLAEnv`,
 registered as **`ShellGameShuffleTouchCustom-VLA-v0`**. The `Custom` suffix
 avoids conflicting with MIKASA's existing `ShellGameShuffleTouch-VLA-v0` ID.
-It uses a 1–5-step ball cue and a 20–35-step shuffle with **1–2 swaps**, then
+It uses a 1–5-step ball cue and a 20–35-step shuffle with **1–4 swaps**, then
 touching the cup that hides the ball.
-The episode horizon is 60 steps and the metadata is Short/Tracking.
+The swap count is sampled uniformly from 1 through 4 on each reset.
+The episode horizon is 120 steps and the metadata is Short/Tracking.
+
+The shuffle duration is **total time for all swaps**, not time per swap.
+All swap counts allow `120 - cue_steps - shuffle_steps` unfrozen robot actions:
+80–99 steps (4.0–4.95 seconds at 20 Hz). More swaps split the shuffle into
+shorter motions; they do not consume extra shuffle phases.
+Success also requires the robot to settle near the correct cup.
 
 Edit `CUE_PHASE_STEPS`, `SHUFFLE_PHASE_STEPS`, `NUM_SWAPS`, and
 `SWAP_ARC_HEIGHT` in the local class to customize it. Scene construction,
@@ -213,15 +220,15 @@ uv run --locked dom-vpwem-train --config configs/shell_game_shuffle_touch.yaml
 ```
 
 Its dataset directory is
-`data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1`.
-The published 2–4-swap data does not match this easier variant. Local collection
+`data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0_swaps1_4_horizon120_tracking_v2`.
+The published 2–4-swap, 60-step data does not match this variant. Local collection
 also records `tracking_xy` (`[T,2]`, metres in the table/world frame) and
 `tracking_hidden` (`[T]`, boolean), aligned with each pre-action RGB frame.
 Positions follow the cup containing the ball; the renderer's parked ball pose
 and precomputed final-slot oracle label are not tracking targets.
 The separate PPO config is `configs/oracles/shell_game_shuffle_touch.yaml`.
 An existing compatible state oracle can be supplied explicitly; new oracle
-runs use `outputs/oracles/shell_game_shuffle_touch/swaps1_2_tracking_v1/`.
+runs use `outputs/oracles/shell_game_shuffle_touch/swaps1_4_horizon120_tracking_v2/`.
 
 For a complete new run, train the PPO oracle, collect 250 successful labeled
 demonstrations from its best checkpoint, and train TrackingVPWEM with:
@@ -245,7 +252,7 @@ uv run --locked python -m dom_vpwem.train_tracking \
   --fp32
 
 uv run --locked --extra eval dom-vpwem-eval \
-  --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/checkpoint_600000.pt \
+  --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/swaps1_4_horizon120_tracking_v2/checkpoint_600000.pt \
   --env-id ShellGameShuffleTouchCustom-VLA-v0 \
   --action-chunk-size 1 \
   --model-name dom-vpwem-tracking \
@@ -275,12 +282,15 @@ across denoising steps. The token is retained when raw memory conditions are
 dropped during training, and is masked for past action slots that precede the
 latest working frame. Recurrent memory size remains unchanged.
 
-New runs write to `outputs/shell_game_shuffle_touch_tracking_position_token/`.
-Existing labeled demonstrations and the PPO oracle can be reused; rerun only
-the imitation command above if they already exist. The action policy needs
-training with the new token. Older tracking checkpoints without the flag
-still load with their original auxiliary-only wiring, but cannot be resumed
-with position conditioning enabled because their architecture differs.
+New imitation runs write to
+`outputs/shell_game_shuffle_touch_tracking_position_token/swaps1_4_horizon120_tracking_v2/`.
+The PPO oracle, dataset, and baseline imitation config also use separate v2
+paths, preserving the older 1–2-swap, 60-step experiments. Run the pipeline
+again to train a matching oracle and collect fresh demonstrations; completed
+v2 demonstrations and oracles can be reused for subsequent imitation runs.
+Older checkpoints remain loadable with their saved model architecture and
+horizon metadata, but evaluation uses the current environment settings.
+Training resume still requires matching task and architecture configurations.
 
 Tracking training defaults to FP32 (`train.mixed_precision: false`) to avoid
 the FP16 overflow observed in these runs. Both training CLIs accept `--fp32`,
@@ -495,8 +505,8 @@ bash scripts/generate_training_examples.sh --intercepts-only
 ```
 
 All four custom tasks require locally collected examples. The shell variant
-uses 1–2 swaps and records tracking labels, so it cannot reuse the published
-2–4-swap demonstrations.
+uses 1–4 swaps, a 120-step horizon, and tracking labels, so it cannot reuse the
+published 2–4-swap, 60-step demonstrations.
 
 The two covers, shell task, and color-sequence task have separate default state
 experts, so at most four PPO runs are started. These use the YAMLs in
@@ -514,7 +524,7 @@ directories and do not skip training or collection for the solid covers and cue 
 The color-sequence expert uses
 `outputs/oracles/remember_color_sequence3_long/wait_for_choices_v1/`, with the
 same `wait_for_choices_v1` suffix on its dataset to require waiting until the
-choices appear. Shell-game data and expert paths now use `swaps1_2_tracking_v1`
+choices appear. Shell-game data and expert paths now use `swaps1_4_horizon120_tracking_v2`
 to separate the easier, labeled task from older artifacts. Once the current datasets are
 complete, rerunning the command reuses them without training again.
 
@@ -545,7 +555,7 @@ The default output locations match the student YAMLs:
 | --- | --- |
 | InterceptFastCover | `intercept_fast_cover_vla_v0_collision_cue5_v1/` |
 | InterceptFastCover2 | `intercept_fast_cover2_vla_v0_collision_cue5_v1/` |
-| ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1/` |
+| ShellGameShuffleTouchCustom | `shell_game_shuffle_touch_custom_vla_v0_swaps1_4_horizon120_tracking_v2/` |
 | RememberColorSequence3-Long | `remember_color_sequence3_long_vla_v0_wait_for_choices_v1/` |
 
 Each locally collected successful episode is stored as a compressed `train_data_000000.npz`,
@@ -569,7 +579,7 @@ Rerun the same command to resume: completed datasets are validated and reused,
 and partial collections continue with fresh seeds using `collection.json`.
 Keep the oracle weights, seed, batch size, and simulator backend unchanged.
 Use a new data root when changing these settings. External shell demonstrations
-must match the 1–2-swap task and include aligned tracking labels. Partial external datasets
+must match the 1–4-swap, 120-step task and include aligned tracking labels. Partial external datasets
 without a collection manifest cannot be extended by this command.
 
 The script requires the MIKASA GPU simulation/rendering stack and task assets.
@@ -680,7 +690,7 @@ data_mikasa_robo/data_npz/
 │   ├── train_data_000000.npz
 │   ├── ...
 │   └── .dom_vpwem_dataset.json
-└── shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1/
+└── shell_game_shuffle_touch_custom_vla_v0_swaps1_4_horizon120_tracking_v2/
     ├── train_data_000000.npz
     ├── ...
     └── .dom_vpwem_dataset.json
@@ -759,7 +769,7 @@ Run these commands from the repository root with the project environment install
   --output eval_results/videos/remember_color_sequence3_long_dataset.mp4
 
 .venv/bin/python scripts/export_dataset_video.py \
-  --dataset-dir data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1 \
+  --dataset-dir data_mikasa_robo/data_npz/shell_game_shuffle_touch_custom_vla_v0_swaps1_4_horizon120_tracking_v2 \
   --allow-unknown-success \
   --output eval_results/videos/shell_game_shuffle_touch_dataset.mp4
 ```
@@ -934,7 +944,7 @@ succeeds, use:
 
 ```bash
 uv run --locked --extra eval python -m dom_vpwem.evaluate \
-  --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/checkpoint_600000.pt \
+  --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/swaps1_4_horizon120_tracking_v2/checkpoint_600000.pt \
   --env-id ShellGameShuffleTouchCustom-VLA-v0 \
   --episodes 50 \
   --action-chunk-size 1 \
@@ -958,6 +968,31 @@ include the episode number, seed, and `success` or `failure`. The result JSON
 lists the selected clips under `videos`, including each path, zero-based
 episode index, seed, and outcome. Use `--video-episode` for fixed single-episode
 recording; it cannot select a nonzero starting episode in this selection mode.
+
+To check whether the shell-game policy needs more reaching/settling time,
+evaluate the same checkpoint and seeds at both 60 and 120 steps:
+
+```bash
+for horizon in 60 120; do
+  uv run --locked --extra eval python -m dom_vpwem.evaluate \
+    --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/swaps1_4_horizon120_tracking_v2/checkpoint_600000.pt \
+    --env-id ShellGameShuffleTouchCustom-VLA-v0 \
+    --episodes 50 --start-seed 4242424242 --action-chunk-size 1 \
+    --max-episode-steps "$horizon" \
+    --output "eval_results/shell_game_tracking_horizon${horizon}.json"
+done
+```
+
+This changes only the evaluation time limit; existing checkpoints and datasets
+can be used directly. The registered task and training configs default to 120
+steps; 60 steps is an explicitly shortened diagnostic evaluation.
+The JSON records the actual `max_episode_steps`, and each episode includes
+`first_success_step`, `phase_timing` (cue/shuffle duration, swaps, manipulation
+start, and available action steps), `final_goal_distance_m`, and
+`final_robot_static` when the environment exposes them. A 120-step rollout that
+first succeeds after step 60 provides evidence that the original time limit
+prevented that success. Diagnostic horizon scores should be reported separately
+from the current default task score.
 
 ## Important shuffle-color data caveat
 

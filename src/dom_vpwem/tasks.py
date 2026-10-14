@@ -87,8 +87,8 @@ _TASK_SPECS = {
     ),
     SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID: TaskSpec(
         env_id=SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID,
-        dataset_slug="shell_game_shuffle_touch_custom_vla_v0_swaps1_2_tracking_v1",
-        max_episode_steps=60,
+        dataset_slug="shell_game_shuffle_touch_custom_vla_v0_swaps1_4_horizon120_tracking_v2",
+        max_episode_steps=120,
         split="Short",
         memory_type="Tracking",
         language_instruction=(

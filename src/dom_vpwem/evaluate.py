@@ -32,6 +32,7 @@ from .mikasa_env import (
     MikasaEnvAdapter,
     MikasaEnvConfig,
     _first_scalar,
+    _to_numpy,
 )
 from .rollout_video import (
     DEFAULT_VIDEO_FPS,
@@ -65,6 +66,10 @@ class EpisodeResult:
     episode_return: float
     n_steps: int
     action_chunk_size: int = 1
+    first_success_step: int | None = None
+    phase_timing: Mapping[str, int] | None = None
+    final_goal_distance_m: float | None = None
+    final_robot_static: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,7 @@ class EvaluationResult:
     benchmark_commit: str = "unknown"
     action_chunk_size: int = 1
     videos: tuple[VideoResult, ...] = ()
+    max_episode_steps: int | None = None
 
     @property
     def success_rate(self) -> float:
@@ -126,6 +132,8 @@ class EvaluationResult:
         }
         if self.videos:
             payload["videos"] = [asdict(video) for video in self.videos]
+        if self.max_episode_steps is not None:
+            payload["max_episode_steps"] = self.max_episode_steps
         return payload
 
 
@@ -178,8 +186,23 @@ def run_episode(
 
     _reset_policy(policy, device=device, seed=seed)
     observation, _ = adapter.reset(seed=seed)
+    base = getattr(adapter.env, "unwrapped", adapter.env)
+    phase_timing = {}
+    for name, attribute in (
+        ("cue_steps", "cue_steps_per_env"),
+        ("shuffle_steps", "shuffle_steps_per_env"),
+        ("num_swaps", "num_swaps_per_env"),
+    ):
+        value = getattr(base, attribute, None)
+        if value is not None:
+            phase_timing[name] = int(_first_scalar(value, default=0))
+    if "cue_steps" in phase_timing and "shuffle_steps" in phase_timing:
+        start = phase_timing["cue_steps"] + phase_timing["shuffle_steps"]
+        phase_timing["manipulation_start_step"] = start
+        phase_timing["action_steps_available"] = max(0, adapter.max_episode_steps - start)
     action_queue: Deque[Any] = deque()
     success_once = False
+    first_success_step = None
     episode_return = 0.0
     n_steps = 0
     action_chunk_size: int | None = None
@@ -203,18 +226,33 @@ def run_episode(
         observation, reward, terminated, truncated, info = adapter.step(action_queue.popleft())
         n_steps += 1
         episode_return += reward
-        success_once = success_once or bool(_first_scalar(info.get("success"), default=False))
+        success_now = bool(_first_scalar(info.get("success"), default=False))
+        if success_now and first_success_step is None:
+            first_success_step = n_steps
+        success_once = success_once or success_now
         if frame_sink is not None:
             frame_sink.write_frame(observation, step=n_steps, success=success_once)
         if terminated or truncated:
             break
 
+    goal_position = info.get("obj_to_goal_pos")
+    goal_distance = (
+        float(np.linalg.norm(_to_numpy(goal_position).reshape(-1, 3)[0]))
+        if goal_position is not None else None
+    )
+    robot_static = info.get("is_robot_static")
     return EpisodeResult(
         seed=seed,
         success_once=success_once,
         episode_return=episode_return,
         n_steps=n_steps,
         action_chunk_size=action_chunk_size or 1,
+        first_success_step=first_success_step,
+        phase_timing=phase_timing or None,
+        final_goal_distance_m=goal_distance,
+        final_robot_static=(
+            bool(_first_scalar(robot_static, default=False)) if robot_static is not None else None
+        ),
     )
 
 
@@ -398,6 +436,7 @@ def evaluate_policy(
         benchmark_commit=benchmark_commit,
         action_chunk_size=action_chunk_size or 1,
         videos=tuple(videos),
+        max_episode_steps=adapter.max_episode_steps,
     )
 
 
@@ -426,6 +465,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sim-backend", default="gpu")
     parser.add_argument("--episodes", type=int, default=NUM_EPISODES)
     parser.add_argument("--start-seed", type=int, default=START_SEED)
+    parser.add_argument(
+        "--max-episode-steps", type=int, default=None,
+        help="Override evaluation horizon for diagnostics; default: registered task limit.",
+    )
     parser.add_argument("--num-inference-steps", type=int, default=None)
     parser.add_argument("--action-chunk-size", type=int, default=None)
     parser.add_argument("--model-name", default="dom-vpwem")
@@ -472,6 +515,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.max_episode_steps is not None and args.max_episode_steps <= 0:
+        parser.error("--max-episode-steps must be positive")
     try:
         _validate_video_options(
             args.video_output, args.episodes, args.video_episode, args.video_fps,
@@ -502,9 +547,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_config["num_inference_steps"] = args.num_inference_steps
     if args.action_chunk_size is not None:
         model_config["requested_action_chunk_size"] = args.action_chunk_size
+    make_kwargs = {}
+    if args.max_episode_steps is not None:
+        make_kwargs["max_episode_steps"] = args.max_episode_steps
+        model_config["requested_max_episode_steps"] = args.max_episode_steps
     result = evaluate_policy(
         policy,
-        env_config=MikasaEnvConfig(env_id=args.env_id, sim_backend=args.sim_backend),
+        env_config=MikasaEnvConfig(
+            env_id=args.env_id, sim_backend=args.sim_backend, make_kwargs=make_kwargs,
+        ),
         n_episodes=args.episodes,
         start_seed=args.start_seed,
         device=args.device,

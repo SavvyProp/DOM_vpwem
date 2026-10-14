@@ -52,12 +52,13 @@ class TrackingExperimentConfig(ExperimentConfig):
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
 
     @classmethod
-    def from_dict(cls, value: Mapping):
+    def from_dict(cls, value: Mapping, *, validate_task_horizon: bool = True):
         base = ExperimentConfig.from_dict(
-            {key: val for key, val in value.items() if key != "tracking"}
+            {key: val for key, val in value.items() if key != "tracking"},
+            validate_task_horizon=validate_task_horizon,
         )
         config = cls(base.task, base.model, base.train, TrackingConfig(**value.get("tracking", {})))
-        config.validate()
+        config.validate(validate_task_horizon=validate_task_horizon)
         return config
 
     @classmethod
@@ -68,8 +69,8 @@ class TrackingExperimentConfig(ExperimentConfig):
     def to_dict(self):
         return asdict(self)
 
-    def validate(self):
-        super().validate()
+    def validate(self, *, validate_task_horizon: bool = True):
+        super().validate(validate_task_horizon=validate_task_horizon)
         if self.task.env_id != SHELL_GAME_SHUFFLE_TOUCH_CUSTOM_ENV_ID:
             raise ValueError("Tracking VPWEM currently supports only ShellGameShuffleTouchCustom")
         if self.model.memory_subsample_ratio != 1 or self.model.memory_cache_strategy != "fifo":

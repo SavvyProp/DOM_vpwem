@@ -84,3 +84,17 @@ def test_task_horizon_must_match_registered_benchmark() -> None:
 
     with pytest.raises(ValueError, match="30-step horizon"):
         ExperimentConfig(task=task).validate()
+
+
+def test_checkpoint_config_preserves_older_horizon_but_training_remains_strict() -> None:
+    saved = ExperimentConfig.from_yaml("configs/shell_game_shuffle_touch.yaml").to_dict()
+    saved["task"]["max_episode_steps"] = 60
+    with pytest.raises(ValueError, match="120-step horizon"):
+        ExperimentConfig.from_dict(saved)
+    loaded = ExperimentConfig.from_dict(saved, validate_task_horizon=False)
+    assert loaded.task.max_episode_steps == 60
+    with pytest.raises(ValueError, match="120-step horizon"):
+        loaded.validate()
+    saved["task"]["max_episode_steps"] = -1
+    with pytest.raises(ValueError, match="positive integer"):
+        ExperimentConfig.from_dict(saved, validate_task_horizon=False)

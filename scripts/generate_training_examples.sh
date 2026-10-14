@@ -39,7 +39,7 @@ Options:
 Complete, validated datasets are reused. Interrupted collections resume with
 new seeds and never overwrite saved episodes. Keep seed, num-envs, and oracle
 weights unchanged when resuming. Use a new data root for a new experiment.
-Shell data uses swaps1_2_tracking_v1 and includes hidden-ball tracking labels.
+Shell data uses swaps1_4_horizon120_tracking_v2 and includes hidden-ball tracking labels.
 
 By default commands use: uv run --locked --extra eval --extra data --inexact python
 Set PYTHON_BIN to a Python executable with the project dependencies installed
@@ -99,7 +99,7 @@ if [[ -z "$SHELL_SOURCE" ]]; then
 fi
 case "$SHELL_SOURCE" in
     collect) ;;
-    download) die "The custom shell task uses 1-2 swaps; use --shell-source collect" ;;
+    download) die "The custom shell task uses 1-4 swaps and 120 steps; use --shell-source collect" ;;
     *) die "--shell-source must be download or collect" ;;
 esac
 
@@ -161,7 +161,7 @@ prepare_oracle() {
             output_dir="$output_dir/wait_for_choices_v1"
             ;;
         shell_game_shuffle_touch)
-            output_dir="$output_dir/swaps1_2_tracking_v1"
+            output_dir="$output_dir/swaps1_4_horizon120_tracking_v2"
             ;;
     esac
     if [[ -n "$supplied" ]]; then

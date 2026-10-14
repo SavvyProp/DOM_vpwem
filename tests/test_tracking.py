@@ -320,10 +320,12 @@ def test_short_training_resume_and_policy_loading(tmp_path, condition_on_positio
     payload = torch.load(checkpoint, weights_only=False)
     assert payload["format_version"] == CHECKPOINT_VERSION
     assert "tracking" in payload["config"]
+    # Older trained policies must load after the registered horizon increases.
+    payload["config"]["task"]["max_episode_steps"] = 60
     if not condition_on_position:
         # Simulate a checkpoint produced before position conditioning existed.
         del payload["config"]["tracking"]["condition_on_position"]
-        torch.save(payload, checkpoint)
+    torch.save(payload, checkpoint)
     policy = load_policy(checkpoint, device="cpu")
     assert isinstance(policy.model, TrackingVPWEM)
     assert policy.model.tracking_config.condition_on_position == condition_on_position

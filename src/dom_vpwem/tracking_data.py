@@ -14,7 +14,7 @@ def load_tracking_labels(path: Path, full_length: int, length: int):
         if missing:
             raise DatasetFormatError(
                 f"{path}: missing tracking labels {sorted(missing)}. Collect fresh "
-                "1-2-swap demonstrations with dom_vpwem.collect_demos."
+                "demonstrations for the 1-4-swap, 120-step task with dom_vpwem.collect_demos."
             )
         xy = np.asarray(archive["tracking_xy"])
         hidden = np.asarray(archive["tracking_hidden"])
