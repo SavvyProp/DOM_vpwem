@@ -111,6 +111,7 @@ class TrainConfig:
     save_every: int = 20_000
     keep_last_checkpoints: int = 3
     mixed_precision: bool = True
+    attention_backend: str = "auto"
     compile_model: bool = False
     resume: str | None = None
     vision_encoder_checkpoint: str | None = None
@@ -140,6 +141,8 @@ class ExperimentConfig:
             raise ValueError("num_workers must be non-negative")
         if self.train.prefetch_factor < 1:
             raise ValueError("prefetch_factor must be positive")
+        if self.train.attention_backend not in {"auto", "math"}:
+            raise ValueError("train.attention_backend must be 'auto' or 'math'")
         if (
             self.model.freeze_vision_encoder
             and not self.train.vision_encoder_checkpoint

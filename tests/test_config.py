@@ -49,6 +49,13 @@ def test_prefetch_factor_must_be_positive() -> None:
         config.validate()
 
 
+def test_config_rejects_unknown_attention_backend() -> None:
+    config = ExperimentConfig()
+    config.train.attention_backend = "unsupported"
+    with pytest.raises(ValueError, match="attention_backend"):
+        config.validate()
+
+
 def test_frozen_random_encoder_is_rejected_without_a_checkpoint() -> None:
     config = ExperimentConfig()
     config.model.freeze_vision_encoder = True

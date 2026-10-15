@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import random
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ import dom_vpwem.train as train_module
 from dom_vpwem.config import ExperimentConfig
 from dom_vpwem.normalization import NormalizationStats
 from dom_vpwem.train import (
+    _attention_context,
+    _clip_grad_norm,
     _validate_resume_compatibility,
     build_arg_parser,
     load_training_checkpoint,
@@ -190,6 +193,7 @@ def test_resume_allows_precision_changes_and_resets_scaler(
     )
     current = copy.deepcopy(saved)
     current.train.mixed_precision = not saved_mixed_precision
+    current.train.attention_backend = "math"
     restored = _training_state(current)
     restored[4].value = 99  # Represents the fresh scaler for the new precision mode.
     step, stats = load_training_checkpoint(
@@ -264,8 +268,9 @@ def test_fp32_cli_overrides_yaml_only_when_requested(
 
 
 @pytest.mark.parametrize("failure", ["loss", "gradient"])
+@pytest.mark.parametrize("grad_clip_norm", [0.0, 1.0])
 def test_nonfinite_training_stops_before_weight_update_or_checkpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, grad_clip_norm: float,
 ) -> None:
     class NonfinitePolicy(nn.Module):
         def __init__(self) -> None:
@@ -286,14 +291,17 @@ def test_nonfinite_training_stops_before_weight_update_or_checkpoint(
     config.train.save_every = 1
     config.train.num_workers = 0
     config.train.output_dir = str(tmp_path / "output")
+    config.train.grad_clip_norm = grad_clip_norm
     policy = NonfinitePolicy()
     monkeypatch.setattr(
         train_module.NormalizationStats, "from_dataset",
         classmethod(lambda cls, *args, **kwargs: _stats()),
     )
-    exception = FloatingPointError if failure == "loss" else RuntimeError
-    message = "training step 1.*tracking_prefix_loss" if failure == "loss" else "non-finite"
-    with pytest.raises(exception, match=message):
+    message = (
+        "training step 1.*tracking_prefix_loss" if failure == "loss"
+        else "training step 1.*parameters: \\['weight'\\]"
+    )
+    with pytest.raises(FloatingPointError, match=message):
         train_module.train(
             config, dataset_factory=lambda *args, **kwargs: TinyDataset(),
             model_factory=lambda cfg: policy, batch_preparer=lambda *args: {},
@@ -301,6 +309,74 @@ def test_nonfinite_training_stops_before_weight_update_or_checkpoint(
     assert policy.weight.item() == 0
     assert not list(Path(config.train.output_dir).glob("checkpoint_*.pt"))
     assert not (Path(config.train.output_dir) / "metrics.jsonl").exists()
+
+
+def test_training_clips_finite_gradients_when_fp32_norm_overflows(tmp_path, monkeypatch):
+    class LargeGradientPolicy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.zeros(4))
+
+        def diffusion_loss(self):
+            return (self.weight * 1e20).sum()
+
+    config = _cpu_config()
+    config.train.gradient_steps = 1
+    config.train.num_workers = 0
+    config.train.output_dir = str(tmp_path / "output")
+    monkeypatch.setattr(
+        train_module.NormalizationStats, "from_dataset",
+        classmethod(lambda cls, *args, **kwargs: _stats()),
+    )
+    policy = LargeGradientPolicy()
+    checkpoint = train_module.train(
+        config, dataset_factory=lambda *args, **kwargs: TinyDataset(),
+        model_factory=lambda cfg: policy, batch_preparer=lambda *args: {},
+    )
+    torch.testing.assert_close(policy.weight.grad, torch.full((4,), 0.5))
+    saved = torch.load(checkpoint, weights_only=False)
+    assert torch.isfinite(saved["model"]["weight"]).all()
+    assert policy.weight.abs().sum() > 0  # The valid update was not skipped.
+    metric = json.loads((checkpoint.parent / "metrics.jsonl").read_text())
+    assert metric["grad_norm"] == pytest.approx(2e20)
+    assert metric["grad_norm_max"] == metric["grad_norm"]
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf")])
+def test_amp_leaves_nonfinite_gradients_for_scaler_to_skip(invalid):
+    policy = nn.Linear(1, 1, bias=False)
+    policy.weight.grad = torch.full_like(policy.weight, invalid)
+    norm = _clip_grad_norm(policy, 1.0, allow_nonfinite=True)
+    assert not torch.isfinite(norm)
+    assert not torch.isfinite(policy.weight.grad).all()
+
+
+def test_math_attention_restores_backend_flags_after_failure():
+    def flags():
+        return (
+            torch.backends.cuda.flash_sdp_enabled(), torch.backends.cuda.math_sdp_enabled(),
+            torch.backends.cuda.mem_efficient_sdp_enabled(),
+        )
+
+    original = flags()
+    with pytest.raises(RuntimeError, match="test failure"):
+        with _attention_context("math"):
+            assert flags() == (False, True, False)
+            raise RuntimeError("test failure")
+    assert flags() == original
+
+
+@pytest.mark.parametrize("backend", ["auto", "math"])
+def test_cli_attention_backend_override(monkeypatch, tmp_path, backend):
+    captured = []
+
+    def capture_train(config):
+        captured.append(config)
+        return tmp_path / "checkpoint.pt"
+
+    monkeypatch.setattr(train_module, "train", capture_train)
+    assert train_module.main(["--attention-backend", backend]) == 0
+    assert captured[0].train.attention_backend == backend
 
 
 @pytest.mark.parametrize("num_workers", [0, 2])

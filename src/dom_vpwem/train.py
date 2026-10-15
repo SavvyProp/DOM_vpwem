@@ -31,6 +31,7 @@ _RESUME_MUTABLE_TRAIN_FIELDS = {
     "resume",
     "vision_encoder_checkpoint",
     "mixed_precision",
+    "attention_backend",
 }
 
 
@@ -84,6 +85,56 @@ def _make_grad_scaler(enabled: bool) -> Any:
     if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
         return torch.amp.GradScaler("cuda", enabled=enabled)
     return torch.cuda.amp.GradScaler(enabled=enabled)  # pragma: no cover
+
+
+def _attention_context(backend: str):
+    """Select attention kernels locally, including support for PyTorch 2.2."""
+    if backend == "auto":
+        return nullcontext()
+    if backend != "math":
+        raise ValueError(f"Unsupported attention backend: {backend}")
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except ImportError:
+        return torch.backends.cuda.sdp_kernel(
+            enable_flash=False, enable_math=True, enable_mem_efficient=False,
+        )
+    return sdpa_kernel(SDPBackend.MATH)
+
+
+@torch.no_grad()
+def _clip_grad_norm(
+    model: torch.nn.Module, max_norm: float, *, allow_nonfinite: bool = False,
+) -> Tensor:
+    """Recover FP32 norm overflow without accepting invalid gradient values.
+
+    The usual fast path stays in the gradient dtype. Only a failed norm uses
+    FP64 reductions. AMP may leave invalid gradients for GradScaler to reject.
+    """
+    named = [(name, p) for name, p in model.named_parameters() if p.grad is not None]
+    parameters = [p for _, p in named]
+    limit = max_norm if max_norm > 0 else math.inf
+    try:
+        return torch.nn.utils.clip_grad_norm_(parameters, limit, error_if_nonfinite=True)
+    except RuntimeError as exc:
+        if "non-finite" not in str(exc):
+            raise
+    # clip_grad_norm_ raises before modifying any gradients. Finite FP32
+    # values can nevertheless overflow its sum of squares (e.g. 1e20).
+    norms = [torch.linalg.vector_norm(p.grad, dtype=torch.float64) for p in parameters]
+    total = torch.linalg.vector_norm(torch.stack(norms))
+    if bool(torch.isfinite(total)):
+        if max_norm > 0:
+            coefficient = (max_norm / (total + 1e-6)).clamp(max=1.0)
+            for parameter in parameters:
+                parameter.grad.mul_(coefficient.to(parameter.grad))
+        return total
+    if allow_nonfinite:
+        # unscale_ has already recorded the invalid gradients; scaler.step
+        # will skip Adam. Do not turn them into apparent finite updates.
+        return total
+    bad_names = [name for name, p in named if not bool(torch.isfinite(p.grad).all())]
+    raise FloatingPointError(f"non-finite gradient values in parameters: {bad_names}")
 
 
 def _capture_rng_state(data_generator: torch.Generator) -> dict[str, Any]:
@@ -370,6 +421,8 @@ def train(
     running_loss = 0.0
     running_metrics: dict[str, float] = {}
     running_count = 0
+    running_grad_norm = 0.0
+    maximum_grad_norm = 0.0
     interval_start = time.monotonic()
 
     for step in range(start_step + 1, config.train.gradient_steps + 1):
@@ -380,9 +433,13 @@ def train(
             if use_amp
             else nullcontext()
         )
-        with autocast:
-            loss = train_model.diffusion_loss(**batch)
-        if not bool(torch.isfinite(loss)):
+        with _attention_context(config.train.attention_backend):
+            with autocast:
+                loss = train_model.diffusion_loss(**batch)
+            finite_loss = bool(torch.isfinite(loss))
+            if finite_loss:
+                scaler.scale(loss).backward()
+        if not finite_loss:
             components = {
                 key: float(value) for key, value in getattr(model, "loss_metrics", {}).items()
             }
@@ -396,15 +453,26 @@ def train(
                 "Check the first failing component and inputs. For an FP16 run, "
                 "try --fp32 or train.mixed_precision=false."
             )
-        scaler.scale(loss).backward()
-        if config.train.grad_clip_norm > 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), config.train.grad_clip_norm,
-                # AMP handles scaled-gradient overflow by skipping the update.
-                # Without AMP, stop before Adam or EMA weights are corrupted.
-                error_if_nonfinite=not use_amp,
+        scaler.unscale_(optimizer)
+        try:
+            grad_norm = _clip_grad_norm(
+                model, config.train.grad_clip_norm, allow_nonfinite=use_amp,
             )
+        except FloatingPointError as exc:
+            components = {
+                key: float(value) for key, value in getattr(model, "loss_metrics", {}).items()
+            }
+            bad_inputs = [
+                key for key, value in batch.items()
+                if torch.is_floating_point(value) and not bool(torch.isfinite(value).all())
+            ]
+            raise FloatingPointError(
+                f"Non-finite gradients at training step {step}: loss={float(loss.detach())}; "
+                f"components={components}; nonfinite_inputs={bad_inputs}; "
+                f"attention_backend={config.train.attention_backend}; {exc}. "
+                "No optimizer update was applied for this batch. If using fused attention, "
+                "resume with --attention-backend math to test the math implementation."
+            ) from exc
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
@@ -413,6 +481,8 @@ def train(
         for key, value in getattr(model, "loss_metrics", {}).items():
             running_metrics[key] = running_metrics.get(key, 0.0) + float(value)
         running_count += 1
+        running_grad_norm += float(grad_norm)
+        maximum_grad_norm = max(maximum_grad_norm, float(grad_norm))
 
         if step % config.train.log_every == 0 or step == 1:
             elapsed = time.monotonic() - interval_start
@@ -421,6 +491,8 @@ def train(
                 "loss": running_loss / max(running_count, 1),
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "seconds": elapsed,
+                "grad_norm": running_grad_norm / running_count,
+                "grad_norm_max": maximum_grad_norm,
                 **{key: value / max(running_count, 1) for key, value in running_metrics.items()},
             }
             rendered = json.dumps(metric, sort_keys=True)
@@ -430,6 +502,8 @@ def train(
             running_loss = 0.0
             running_metrics.clear()
             running_count = 0
+            running_grad_norm = 0.0
+            maximum_grad_norm = 0.0
             interval_start = time.monotonic()
 
         if step % config.train.save_every == 0 or step == config.train.gradient_steps:
@@ -470,6 +544,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Train in float32, disabling FP16 autocast and gradient scaling. Overrides YAML.",
     )
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument(
+        "--attention-backend", choices=("auto", "math"), default=None,
+        help="Use math to disable fused attention kernels; can be changed when resuming.",
+    )
     parser.add_argument("--vision-encoder-checkpoint", type=Path, default=None)
     return parser
 
@@ -493,6 +571,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config.train.batch_size = args.batch_size
     if args.fp32:
         config.train.mixed_precision = False
+    if args.attention_backend is not None:
+        config.train.attention_backend = args.attention_backend
     if args.resume is not None:
         config.train.resume = str(args.resume)
     if args.vision_encoder_checkpoint is not None:

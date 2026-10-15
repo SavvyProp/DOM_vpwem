@@ -249,7 +249,7 @@ The tracking-supervised policy lives in
 ```bash
 uv run --locked python -m dom_vpwem.train_tracking \
   --config configs/shell_game_shuffle_touch_tracking.yaml \
-  --fp32
+  --fp32 --attention-backend math
 
 uv run --locked --extra eval dom-vpwem-eval \
   --checkpoint outputs/shell_game_shuffle_touch_tracking_position_token/swaps1_4_horizon120_tracking_v2/checkpoint_600000.pt \
@@ -299,6 +299,29 @@ The shell-game pipeline script passes it explicitly for imitation training.
 To continue an existing compatible run in FP32, add `--fp32` together with
 `--resume /path/to/checkpoint.pt`. Model, EMA, optimizer, and scheduler state
 are restored; a precision change starts with a fresh gradient scaler.
+
+The tracking YAML also selects `train.attention_backend: math`. This disables
+fused attention kernels, which have [reported FP32 backward NaNs](https://github.com/pytorch/pytorch/issues/119320)
+on some PyTorch/GPU combinations; it can be slower. This is a numerical workaround,
+not confirmation that the attention kernel caused a particular failure.
+Both CLIs accept `--attention-backend auto|math`, including when resuming older
+checkpoints. To resume only imitation training after a failure, use the latest
+saved checkpoint (20,000 steps with the default save interval at step 33,600):
+
+```bash
+uv run --locked --extra eval --inexact python -m dom_vpwem.train_tracking \
+  --config configs/shell_game_shuffle_touch_tracking.yaml \
+  --resume outputs/shell_game_shuffle_touch_tracking_position_token/swaps1_4_horizon120_tracking_v2/checkpoint_20000.pt \
+  --fp32 --attention-backend math
+```
+
+Training logs include the mean and maximum gradient norm before clipping as
+`grad_norm` and `grad_norm_max`. If the FP32 norm overflows but all gradient
+values are finite, clipping retries the norm reduction in FP64. Actual NaN/Inf
+gradients still stop FP32 training before updating weights, and the error
+reports the step, component losses, non-finite inputs, and affected parameter
+names. Do not disable the finite-gradient check to continue through invalid
+gradients; this can corrupt the model and optimizer.
 
 Metrics include diffusion loss, current/prefix tracking losses, and current
 position error in metres. Checkpoints store the tracking configuration and

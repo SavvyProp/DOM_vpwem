@@ -27,6 +27,7 @@ def main(argv=None):
         ("output_dir", "output_dir"), ("device", "device"), ("steps", "gradient_steps"),
         ("batch_size", "batch_size"), ("resume", "resume"),
         ("vision_encoder_checkpoint", "vision_encoder_checkpoint"),
+        ("attention_backend", "attention_backend"),
     ):
         value = getattr(args, arg)
         if value is not None:

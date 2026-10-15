@@ -28,4 +28,6 @@ train:
   batch_size: 4
   # Use FP32 to avoid the FP16 overflow observed in tracking runs.
   mixed_precision: false
+  # Avoid fused-attention kernels while investigating non-finite FP32 gradients.
+  attention_backend: math
   compile_model: false

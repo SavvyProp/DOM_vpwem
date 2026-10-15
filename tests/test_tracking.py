@@ -23,7 +23,12 @@ from dom_vpwem.tracking import (
     TrackingVPWEM,
 )
 from dom_vpwem.tracking_data import TrackingNpzDataset
-from dom_vpwem.train import CHECKPOINT_VERSION, _validate_resume_compatibility, train
+from dom_vpwem.train import (
+    CHECKPOINT_VERSION,
+    _attention_context,
+    _validate_resume_compatibility,
+    train,
+)
 from dom_vpwem.train_tracking import prepare_tracking_batch
 
 
@@ -96,6 +101,20 @@ def test_tracking_cli_fp32_override_and_default(tmp_path, monkeypatch, fp32):
     args = ["--config", str(config_path)] + (["--fp32"] if fp32 else [])
     assert tracking_train_module.main(args) == 0
     assert captured[-1].train.mixed_precision == (not fp32)
+
+
+@pytest.mark.parametrize("backend", [None, "auto", "math"])
+def test_tracking_attention_backend_default_and_override(tmp_path, monkeypatch, backend):
+    captured = []
+
+    def capture_train(config, **kwargs):
+        captured.append(config)
+        return tmp_path / "checkpoint.pt"
+
+    monkeypatch.setattr(tracking_train_module, "train", capture_train)
+    args = [] if backend is None else ["--attention-backend", backend]
+    assert tracking_train_module.main(args) == 0
+    assert captured[0].train.attention_backend == (backend or "math")
 
 
 def test_tracking_head_trains_both_memories():
@@ -237,6 +256,33 @@ def test_diffusion_loss_trains_position_predictor_through_token(tmp_path):
         assert parameter.grad.abs().sum() > 0
 
 
+def test_math_attention_long_tracking_history_has_finite_gradients():
+    torch.manual_seed(37)
+    config = replace(model_config(), memory_cache_size=8)
+    model = TrackingVPWEM(config, TrackingConfig(condition_on_position=True))
+    model.encoder = TinyEncoder()
+    batch, history = 4, 118
+    # Include an entirely empty history, delayed starts, and the full 120-step
+    # episode in the same batch to exercise masked recurrent attention.
+    times = torch.arange(history).expand(batch, -1)
+    mask = times >= torch.tensor([history, 115, 60, 0])[:, None]
+    with _attention_context("math"):
+        loss = model.diffusion_loss(
+            torch.randn(batch, config.action_horizon, 7),
+            torch.zeros(batch, 2, 1, 1, 6), torch.randn(batch, 2, 7),
+            torch.zeros(batch, history, 1, 1, 6), torch.randn(batch, history, 7),
+            times, mask,
+            tracking_xy=torch.randn(batch, history + 2, 2) * 0.1,
+            tracking_hidden=torch.ones(batch, history + 2, dtype=torch.bool),
+            tracking_mask=torch.cat([mask, torch.ones(batch, 2, dtype=torch.bool)], dim=1),
+        )
+        loss.backward()
+    assert torch.isfinite(loss)
+    for name, parameter in model.named_parameters():
+        if parameter.grad is not None:
+            assert torch.isfinite(parameter.grad).all(), name
+
+
 def test_position_token_matches_sampling_and_never_uses_ground_truth(tmp_path):
     class CapturingDenoiser(nn.Module):
         def __init__(self):
@@ -335,6 +381,11 @@ def test_short_training_resume_and_policy_loading(tmp_path, condition_on_positio
     action = policy.act({"rgb": np.zeros((128, 128, 6), np.uint8), "proprio": np.zeros(7)})
     assert action.shape == (1, 7) and torch.isfinite(action).all()
     config.train.resume = str(checkpoint.parent / "checkpoint_1.pt")
+    # A checkpoint predating the backend setting defaults to auto and can
+    # still resume with math kernels, retaining its architecture and optimizer.
+    old_checkpoint = torch.load(config.train.resume, weights_only=False)
+    del old_checkpoint["config"]["train"]["attention_backend"]
+    torch.save(old_checkpoint, config.train.resume)
     resumed = train(
         config, dataset_factory=TrackingNpzDataset,
         model_factory=lambda cfg: TrackingVPWEM(cfg, config.tracking),
